@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import { timingSafeEqual } from 'node:crypto';
 import { env } from '../config/env.js';
 import { createGitLabClient, type GitLabClient } from './api.js';
 import { runReviewPipeline } from '../pipeline/review.workflow.js';
@@ -25,9 +26,20 @@ export function createWebhookRouter(): Router {
   const gitlab = createGitLabClient();
 
   router.post('/webhook/gitlab', async (req: Request, res: Response) => {
-    // Validate token
+    // Validate token (timing-safe to prevent timing attacks)
     const token = req.headers['x-gitlab-token'] as string;
-    if (token !== env.GITLAB_WEBHOOK_SECRET) {
+    if (!token || !env.GITLAB_WEBHOOK_SECRET) {
+      res.status(403).json({ error: 'Invalid webhook token' });
+      return;
+    }
+    try {
+      const tokenBuf = Buffer.from(token);
+      const secretBuf = Buffer.from(env.GITLAB_WEBHOOK_SECRET);
+      if (tokenBuf.length !== secretBuf.length || !timingSafeEqual(tokenBuf, secretBuf)) {
+        res.status(403).json({ error: 'Invalid webhook token' });
+        return;
+      }
+    } catch {
       res.status(403).json({ error: 'Invalid webhook token' });
       return;
     }
@@ -74,12 +86,13 @@ export async function triggerReview(
   const diff = changes.map(c => c.diff).join('\n');
   const changedFiles = changes.map(c => c.new_path);
 
-  // Run pipeline
+  // Run pipeline (repoPath defaults to cwd if not cloning)
   const result = await runReviewPipeline({
     mrIid,
     projectId,
     diff,
     changedFiles,
+    repoPath: process.cwd(),
   });
 
   if (!result.success || !result.output) {

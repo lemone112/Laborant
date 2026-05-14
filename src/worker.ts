@@ -1,5 +1,4 @@
 import 'dotenv/config';
-import { validateEnv } from './config/env.js';
 import { env } from './config/env.js';
 import { Worker } from '@temporalio/worker';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +7,7 @@ import * as activities from './pipeline/activities.js';
 import * as reindexActivities from './repo-intelligence/reindex.activities.js';
 
 async function main() {
-  validateEnv();
+  // env is validated at module load (env.ts:91) — no need for explicit validateEnv()
 
   console.log('Starting Temporal worker...');
   console.log(`Connecting to Temporal at ${env.TEMPORAL_URL}`);
@@ -18,7 +17,7 @@ async function main() {
     const __dirname = dirname(__filename);
 
     const worker = await Worker.create({
-      workflowsPath: join(__dirname, 'pipeline', 'review.workflow.js'),
+      workflowsPath: join(__dirname, 'workflows.js'),
       activities: {
         ...activities,
         ...reindexActivities,
@@ -28,6 +27,7 @@ async function main() {
     });
 
     console.log('Worker connected. Listening for tasks on queue "laborant"...');
+    console.log('Registered workflows: reviewWorkflow + reindexWorkflow');
     console.log('Registered activities: review pipeline + reindex pipeline');
     await worker.run();
   } catch (err) {

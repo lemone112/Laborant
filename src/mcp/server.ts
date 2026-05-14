@@ -144,25 +144,45 @@ export async function startMcpServer(): Promise<void> {
     },
   );
 
-  // ── Tool 5: query_graph ──
+  // ── Tool 5: query_graph (read-only) ──
   server.tool(
     'query_graph',
-    'Run a Cypher query against the dependency graph.',
+    'Query the dependency graph for symbols and their relationships. Only read-only MATCH queries are allowed.',
     {
-      query: z.string().describe('Cypher query string'),
-      params: z.record(z.any()).optional().describe('Query parameters'),
+      symbolName: z.string().optional().describe('Symbol name to look up'),
+      file: z.string().optional().describe('File path to query dependents for'),
+      depth: z.number().default(3).describe('Max traversal depth (1-5)'),
     },
-    async ({ query, params }) => {
+    async ({ symbolName, file, depth }) => {
       try {
-        // For raw queries, use the driver directly
-        const neo4j = await import('neo4j-driver');
-        const driver = neo4j.default.driver(env.NEO4J_URL, neo4j.default.auth.basic(env.NEO4J_USER, env.NEO4J_PASSWORD));
-        const session = driver.session();
-        const result = await session.run(query, params ?? {});
-        const records = result.records.map(r => r.toObject());
-        await session.close();
-        await driver.close();
-        return { content: [{ type: 'text', text: JSON.stringify(records, null, 2) }] };
+        const graph = createGraphClient(env.NEO4J_URL, env.NEO4J_USER, env.NEO4J_PASSWORD);
+        const safeDepth = Math.max(1, Math.min(5, Math.floor(depth)));
+
+        if (file) {
+          // Query dependents for a specific file
+          const dependents = await graph.getDependents([file], safeDepth);
+          await graph.close();
+          return { content: [{ type: 'text', text: JSON.stringify(dependents, null, 2) }] };
+        }
+
+        if (symbolName) {
+          // Query a symbol's direct dependents
+          const neo4j = await import('neo4j-driver');
+          const driver = neo4j.default.driver(env.NEO4J_URL, neo4j.default.auth.basic(env.NEO4J_USER, env.NEO4J_PASSWORD));
+          const session = driver.session();
+          const result = await session.run(
+            'MATCH (s:Symbol) WHERE s.name = $name OR s.qualifiedName = $name RETURN s LIMIT 20',
+            { name: symbolName },
+          );
+          const records = result.records.map(r => r.toObject());
+          await session.close();
+          await driver.close();
+          await graph.close();
+          return { content: [{ type: 'text', text: JSON.stringify(records, null, 2) }] };
+        }
+
+        await graph.close();
+        return { content: [{ type: 'text', text: 'Provide either symbolName or file parameter' }] };
       } catch (err) {
         return { content: [{ type: 'text', text: `Graph query failed: ${err}` }] };
       }

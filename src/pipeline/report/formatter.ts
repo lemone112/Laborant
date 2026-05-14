@@ -17,7 +17,7 @@ export async function formatReport(
 
   const findingsWithContext = verifiedFindings.map(f => ({
     ...f,
-    coveVerdict: coveResults[f.issue]?.verdict ?? null,
+    coveVerdict: coveResults[f.id]?.verdict ?? null,
   }));
 
   const userPrompt = [

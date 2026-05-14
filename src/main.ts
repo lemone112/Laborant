@@ -1,13 +1,11 @@
 import 'dotenv/config';
 import express from 'express';
-import { validateEnv } from './config/env.js';
+import { env } from './config/env.js';
 import { createWebhookRouter } from './gitlab/webhook.js';
 import { feedbackTracker } from './feedback/tracker.js';
-import { env } from './config/env.js';
 
 async function main() {
-  // Fail-fast if ENV is misconfigured
-  validateEnv();
+  // env is validated at module load (env.ts:91) — no need for explicit validateEnv()
 
   console.log('Laborant — AI Code Review Pipeline starting...');
   console.log(`LLM_BASE_URL: ${env.LLM_BASE_URL}`);

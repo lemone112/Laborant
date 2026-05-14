@@ -66,8 +66,8 @@ export async function runCoVe(
         : verdictRaw === 'revised' ? 'revised'
         : 'confirmed';
 
-      results[finding.issue] = {
-        findingId: finding.issue,
+      results[finding.id] = {
+        findingId: finding.id,
         verdict,
         reasoning: String(result.reasoning ?? ''),
       };

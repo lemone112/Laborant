@@ -20,6 +20,7 @@ import type {
   RiskMapEntry,
 } from '../config/defaults.js';
 import type { PipelineContext, BuildContextInput } from './context-assembly/builder.js';
+import type { ActivityResult } from './activities.js';
 
 // ── Types ──
 
@@ -29,6 +30,14 @@ export interface ReviewWorkflowInput {
   diff: string;
   changedFiles: string[];
   repoPath?: string;
+  /** Max LLM calls for this review (default from env) */
+  maxLLMCalls?: number;
+  /** Max cost in USD for this review (default from env) */
+  maxCostUSD?: number;
+  /** Whether triple review is enabled (default from env) */
+  tripleReviewEnabled?: boolean;
+  /** Whether CoVe verification is enabled (default from env) */
+  coveEnabled?: boolean;
 }
 
 export interface ReviewWorkflowResult {
@@ -43,34 +52,29 @@ export interface ReviewWorkflowResult {
   error?: string;
 }
 
-// ── Activity budget metadata ──
-
-interface ActivityBudgetMeta {
-  llmCalls: number;
-  costUSD: number;
-}
+// ── Activity interface ──
 
 interface ReviewActivities {
-  buildContextActivity(input: BuildContextInput & { budgetRemainingCalls: number; budgetRemainingCostUSD: number }): Promise<PipelineContext & ActivityBudgetMeta>;
-  reviewLogicActivity(context: PipelineContext & { budgetRemainingCalls: number; budgetRemainingCostUSD: number }): Promise<ReviewFinding[] & ActivityBudgetMeta>;
-  reviewRiskActivity(context: PipelineContext & { budgetRemainingCalls: number; budgetRemainingCostUSD: number }): Promise<ReviewFinding[] & ActivityBudgetMeta>;
-  reviewConsistencyActivity(context: PipelineContext & { budgetRemainingCalls: number; budgetRemainingCostUSD: number }): Promise<ReviewFinding[] & ActivityBudgetMeta>;
+  buildContextActivity(input: BuildContextInput & { budgetRemainingCalls: number; budgetRemainingCostUSD: number }): Promise<ActivityResult<PipelineContext>>;
+  reviewLogicActivity(context: PipelineContext & { budgetRemainingCalls: number; budgetRemainingCostUSD: number }): Promise<ActivityResult<ReviewFinding[]>>;
+  reviewRiskActivity(context: PipelineContext & { budgetRemainingCalls: number; budgetRemainingCostUSD: number }): Promise<ActivityResult<ReviewFinding[]>>;
+  reviewConsistencyActivity(context: PipelineContext & { budgetRemainingCalls: number; budgetRemainingCostUSD: number }): Promise<ActivityResult<ReviewFinding[]>>;
   aggregateConsensusActivity(input: {
     logic: ReviewFinding[];
     risk: ReviewFinding[];
     consistency: ReviewFinding[];
     budgetRemainingCalls: number;
     budgetRemainingCostUSD: number;
-  }): Promise<ConsensusResult & ActivityBudgetMeta>;
+  }): Promise<ActivityResult<ConsensusResult>>;
   applyFeedbackGateActivity(findings: ConsensusFinding[], projectId: string): Promise<{ findings: ConsensusFinding[]; adjustedCount: number; matchedPatterns: string[] }>;
-  runCoVeActivity(findings: ConsensusFinding[], context: PipelineContext & { budgetRemainingCalls: number; budgetRemainingCostUSD: number }): Promise<Record<string, CoVeVerdict> & ActivityBudgetMeta>;
+  runCoVeActivity(findings: ConsensusFinding[], context: PipelineContext & { budgetRemainingCalls: number; budgetRemainingCostUSD: number }): Promise<ActivityResult<Record<string, CoVeVerdict>>>;
   formatReportActivity(
     verifiedFindings: ConsensusFinding[],
     coveResults: Record<string, CoVeVerdict>,
     landscape: LandscapeArtifact,
     budgetRemainingCalls: number,
     budgetRemainingCostUSD: number,
-  ): Promise<ReviewOutput & ActivityBudgetMeta>;
+  ): Promise<ActivityResult<ReviewOutput>>;
 }
 
 // ── Activity Proxy ──
@@ -100,55 +104,70 @@ export async function reviewWorkflow(input: ReviewWorkflowInput): Promise<Review
   log.info('Starting review workflow', { projectId: input.projectId, mrIid: input.mrIid });
 
   try {
+    const maxCalls = input.maxLLMCalls ?? 25;
+    const maxCostUSD = input.maxCostUSD ?? 0.50;
+    const tripleReviewEnabled = input.tripleReviewEnabled ?? true;
+    const coveEnabled = input.coveEnabled ?? true;
+
     let totalCalls = 0;
     let totalCostUSD = 0;
-    const maxCalls = 25;
-    const maxCostUSD = 0.50;
     const remainingCalls = () => Math.max(0, maxCalls - totalCalls);
     const remainingCost = () => Math.max(0, maxCostUSD - totalCostUSD);
 
-    const repoPath = input.repoPath;
-    if (!repoPath) {
-      throw new Error('repoPath is required for the review workflow');
-    }
+    const repoPath = input.repoPath ?? process.cwd();
 
     // ── Step 1: Context Assembly ──
-    const context = await buildContextActivity({
+    const contextResult = await buildContextActivity({
       diff: input.diff,
       changedFiles: input.changedFiles,
       repoPath,
       budgetRemainingCalls: remainingCalls(),
       budgetRemainingCostUSD: remainingCost(),
     });
-    totalCalls += context.llmCalls;
-    totalCostUSD += context.costUSD;
+    const context = contextResult.data;
+    totalCalls += contextResult.budget.llmCalls;
+    totalCostUSD += contextResult.budget.costUSD;
 
-    // ── Step 2: Triple Review (parallel) ──
-    const contextWithBudget = { ...context, budgetRemainingCalls: remainingCalls(), budgetRemainingCostUSD: remainingCost() };
-    const [logicResult, riskResult, consistencyResult] = await Promise.all([
-      reviewLogicActivity(contextWithBudget),
-      reviewRiskActivity(contextWithBudget),
-      reviewConsistencyActivity(contextWithBudget),
-    ]);
-    totalCalls += (logicResult.llmCalls ?? 0) + (riskResult.llmCalls ?? 0) + (consistencyResult.llmCalls ?? 0);
-    totalCostUSD += (logicResult.costUSD ?? 0) + (riskResult.costUSD ?? 0) + (consistencyResult.costUSD ?? 0);
+    // ── Step 2: Triple Review (parallel, budget split by 3) ──
+    let logic: ReviewFinding[] = [];
+    let risk: ReviewFinding[] = [];
+    let consistency: ReviewFinding[] = [];
 
-    const logic = Array.isArray(logicResult) ? logicResult : (logicResult as any).findings ?? logicResult;
-    const risk = Array.isArray(riskResult) ? riskResult : (riskResult as any).findings ?? riskResult;
-    const consistency = Array.isArray(consistencyResult) ? consistencyResult : (consistencyResult as any).findings ?? consistencyResult;
+    if (tripleReviewEnabled) {
+      // Split remaining budget evenly across 3 parallel activities to avoid 3x overspend
+      const callsPerReview = Math.floor(remainingCalls() / 3);
+      const costPerReview = remainingCost() / 3;
+
+      const contextWithBudget = {
+        ...context,
+        budgetRemainingCalls: callsPerReview,
+        budgetRemainingCostUSD: costPerReview,
+      };
+      const [logicResult, riskResult, consistencyResult] = await Promise.all([
+        reviewLogicActivity(contextWithBudget),
+        reviewRiskActivity(contextWithBudget),
+        reviewConsistencyActivity(contextWithBudget),
+      ]);
+      logic = logicResult.data;
+      risk = riskResult.data;
+      consistency = consistencyResult.data;
+      totalCalls += logicResult.budget.llmCalls + riskResult.budget.llmCalls + consistencyResult.budget.llmCalls;
+      totalCostUSD += logicResult.budget.costUSD + riskResult.budget.costUSD + consistencyResult.budget.costUSD;
+    }
 
     // ── Step 3: Consensus ──
-    const consensus = await aggregateConsensusActivity({
+    const consensusResult = await aggregateConsensusActivity({
       logic,
       risk,
       consistency,
       budgetRemainingCalls: remainingCalls(),
       budgetRemainingCostUSD: remainingCost(),
     });
-    totalCalls += consensus.llmCalls ?? 0;
-    totalCostUSD += consensus.costUSD ?? 0;
+    const consensus = consensusResult.data;
+    totalCalls += consensusResult.budget.llmCalls;
+    totalCostUSD += consensusResult.budget.costUSD;
 
-    // ── Step 3.5: Feedback Gate (adjust based on false positive patterns) ──
+    // ── Step 3.5: Feedback Gate ──
     try {
       const feedbackResult = await applyFeedbackGateActivity(consensus.findings, input.projectId);
       consensus.findings = feedbackResult.findings;
@@ -157,27 +176,28 @@ export async function reviewWorkflow(input: ReviewWorkflowInput): Promise<Review
       log.warn('Feedback gate failed (non-fatal)', { error: String(err) });
     }
 
-    // ── Step 4: CoVe (escalated only) ──
+    // ── Step 4: CoVe (escalated only, when enabled) ──
     let coveResults: Record<string, CoVeVerdict> = {};
-    if (consensus.escalateCount > 0) {
+    if (consensus.escalateCount > 0 && coveEnabled) {
       try {
         const coveContext = { ...context, budgetRemainingCalls: remainingCalls(), budgetRemainingCostUSD: remainingCost() };
         const coveResult = await runCoVeActivity(consensus.findings, coveContext);
-        coveResults = coveResult;
-        totalCalls += (coveResult as any).llmCalls ?? 0;
-        totalCostUSD += (coveResult as any).costUSD ?? 0;
+        coveResults = coveResult.data;
+        totalCalls += coveResult.budget.llmCalls;
+        totalCostUSD += coveResult.budget.costUSD;
       } catch (err) {
         log.warn('CoVe failed (non-fatal)', { error: String(err) });
       }
     }
 
     // ── Step 5: Report ──
-    const output = await formatReportActivity(
+    const reportResult = await formatReportActivity(
       consensus.findings, coveResults, context.landscape,
       remainingCalls(), remainingCost(),
     );
-    totalCalls += output.llmCalls ?? 0;
-    totalCostUSD += output.costUSD ?? 0;
+    const output = reportResult.data;
+    totalCalls += reportResult.budget.llmCalls;
+    totalCostUSD += reportResult.budget.costUSD;
 
     return {
       success: true,
@@ -233,6 +253,9 @@ export async function runReviewPipeline(
   const budget = createBudgetTracker();
   const llm = createLLMClient(budget);
 
+  const tripleReviewEnabled = input.tripleReviewEnabled ?? env.PIPELINE_TRIPLE_REVIEW;
+  const coveEnabled = input.coveEnabled ?? env.PIPELINE_COVE_ENABLED;
+
   try {
     // Context Assembly
     const context = await buildContext({
@@ -244,16 +267,22 @@ export async function runReviewPipeline(
     budget.checkBudget();
 
     // Triple Review (parallel)
-    const [logic, risk, consistency] = await Promise.all([
-      reviewLogic(context, llm),
-      reviewRisk(context, llm),
-      reviewConsistency(context, llm),
-    ]);
+    let logic: ReviewFinding[] = [];
+    let risk: ReviewFinding[] = [];
+    let consistency: ReviewFinding[] = [];
+
+    if (tripleReviewEnabled) {
+      [logic, risk, consistency] = await Promise.all([
+        reviewLogic(context, llm),
+        reviewRisk(context, llm),
+        reviewConsistency(context, llm),
+      ]);
+    }
 
     // Consensus
     const consensus = await aggregateConsensus({ logic, risk, consistency }, llm);
 
-    // Feedback gate — adjust findings based on historical false positive patterns
+    // Feedback gate
     const { applyFeedbackGate } = await import('./feedback-gate.js');
     const feedbackResult = await applyFeedbackGate(consensus.findings, input.projectId);
     consensus.findings = feedbackResult.findings;
@@ -261,7 +290,7 @@ export async function runReviewPipeline(
 
     // CoVe (escalated only)
     let coveResults: Record<string, CoVeVerdict> | null = null;
-    if (consensus.escalateCount > 0 && env.PIPELINE_COVE_ENABLED) {
+    if (consensus.escalateCount > 0 && coveEnabled) {
       coveResults = await runCoVe(consensus.findings, context, llm, budget);
     }
 

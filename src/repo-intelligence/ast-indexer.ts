@@ -96,7 +96,7 @@ type SymbolMap = Map<string, SymbolInfo>;
  * const lang = selectLanguage('src/app.tsx'); // → TypeScript TSX grammar
  * ```
  */
-export function selectLanguage(file: string): any {
+export function selectLanguage(file: string): ReturnType<Parser['getLanguage']> {
   const ext = file.split('.').pop()?.toLowerCase();
 
   switch (ext) {

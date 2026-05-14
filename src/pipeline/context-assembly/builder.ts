@@ -18,10 +18,6 @@
  * All LLM calls are routed through the tier system — no hardcoded model names.
  */
 
-import { readFile } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
 import { env } from '../../config/env.js';
 import {
   PIPELINE_MODEL_MAP,
@@ -36,6 +32,7 @@ import {
   type SearchResult,
 } from '../../repo-intelligence/embedding-sync.js';
 import { chunkDiff, type DiffChunk } from '../../util/diff-chunker.js';
+import { loadPrompt } from '../../util/prompts.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types
@@ -85,38 +82,6 @@ export interface BuildContextInput {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Prompt loading
-// ────────────────────────────────────────────────────────────────────────────
-
-/**
- * Resolves the directory containing prompt markdown files.
- *
- * Prompts are located at `<project-root>/prompts/`. This function resolves
- * the path relative to the current module file so it works regardless of
- * the current working directory.
- *
- * @returns Absolute path to the prompts directory.
- */
-function getPromptsDir(): string {
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = dirname(__filename);
-  // From src/pipeline/context-assembly/ → ../../.. = project root
-  return join(__dirname, '..', '..', '..', 'prompts');
-}
-
-/**
- * Reads a prompt markdown file from the prompts directory.
- *
- * @param filename - The prompt file name (e.g. `'landscape.md'`).
- * @returns The file contents as a string.
- * @throws {Error} If the file cannot be read.
- */
-async function loadPrompt(filename: string): Promise<string> {
-  const filePath = join(getPromptsDir(), filename);
-  return readFile(filePath, 'utf-8');
-}
-
-// ────────────────────────────────────────────────────────────────────────────
 // Landscape scan
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -139,7 +104,7 @@ async function scanLandscape(
   diff: string,
 ): Promise<LandscapeArtifact> {
   const tier = PIPELINE_MODEL_MAP.landscapeScan;
-  const prompt = await loadPrompt('landscape.md');
+  const prompt = await loadPrompt('landscape');
 
   // Build a compact file-tree representation for the LLM
   const fileTree = diff
@@ -243,7 +208,7 @@ async function buildRiskMapFromLLM(
   landscape: LandscapeArtifact,
 ): Promise<RiskMapEntry[]> {
   const tier = PIPELINE_MODEL_MAP.riskMap;
-  const prompt = await loadPrompt('risk-map.md');
+  const prompt = await loadPrompt('risk-map');
 
   const userContent = [
     'Landscape:',

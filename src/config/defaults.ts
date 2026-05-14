@@ -20,19 +20,23 @@
  */
 
 import { env } from './env.js';
+import type { ModelTier } from '../llm/tiers.js';
+
+// Re-export ModelTier for convenience
+export type { ModelTier };
 
 // ────────────────────────────────────────────────────────────────────────────
 // Model tier helpers
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * The three LLM capability tiers the pipeline distinguishes.
+ * The LLM capability tiers the pipeline distinguishes.
  *
  * - `cheap`    — fast, low-cost; used for bulk classification & generation
  * - `base`     — balanced quality/cost; used for structured analysis
  * - `frontier` — highest capability; reserved for judgement-heavy steps
+ * - `embedding` — text → vector embedding
  */
-export type ModelTier = 'cheap' | 'base' | 'frontier' | 'embedding';
 
 /**
  * Resolves a {@link ModelTier} to the concrete model name configured via
@@ -299,6 +303,9 @@ export interface ReviewFinding {
  * branches and produces a single, deduplicated set with an agreed-upon status.
  */
 export interface ConsensusFinding {
+  /** Stable unique identifier (hash of issue + locations). Used as key for CoVe results. */
+  id: string;
+
   /**
    * Outcome of consensus resolution.
    * - `agreed`    — all reviewers agree the issue is real

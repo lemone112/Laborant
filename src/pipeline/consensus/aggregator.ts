@@ -2,6 +2,7 @@ import type { ConsensusFinding, ReviewFinding } from '../../config/defaults.js';
 import type { LLMClient } from '../../llm/client.js';
 import { loadPrompt } from '../../util/prompts.js';
 import { requestStructured } from '../../util/structured-output.js';
+import { createHash } from 'node:crypto';
 
 export interface ConsensusResult {
   findings: ConsensusFinding[];
@@ -95,7 +96,12 @@ export async function aggregateConsensus(
       ? f.locations.map((l: any) => String(l))
       : [];
 
+    // Generate a stable ID from issue text + locations
+    const idInput = `${String(f.issue ?? '')}|${locations.join(',')}`;
+    const id = createHash('sha256').update(idInput).digest('hex').slice(0, 12);
+
     return {
+      id,
       status,
       issue: String(f.issue ?? ''),
       sources,

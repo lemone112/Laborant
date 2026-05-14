@@ -7,7 +7,7 @@ Laborant — pipeline для ревью Merge Requests в GitLab. Оркестр
 ## Architecture
 
 ```
-Context Assembly → Triple Review → Consensus → [CoVe?] → Report
+Context Assembly → [Triple Review?] → Consensus → [CoVe?] → Report
       ↓                ↓              ↓          ↓         ↓
   Landscape      Logic/Risk/    Aggregate    Verify    GitLab
   + Risk Map     Consistency    findings     escalated  inline
@@ -15,6 +15,17 @@ Context Assembly → Triple Review → Consensus → [CoVe?] → Report
 ```
 
 **Что обязательно:** LLM API (OpenAI-совместимый). Всё остальное — опционально и gracefully деградирует.
+
+### Execution Modes
+
+1. **Temporal Workflow** (`reviewWorkflow`) — production mode with durability, retries, observability
+2. **Direct Pipeline** (`runReviewPipeline`) — for MCP server, CLI, local dev
+
+Both modes share the same pipeline logic. The Temporal workflow passes configuration (budget, feature flags) as input parameters, making it fully deterministic and configurable without env access.
+
+### LLM Orchestration
+
+LLM calls use plain async functions inside Temporal Activities. No LangGraph — the pipeline is linear enough that a simple Activity-per-step pattern is sufficient and more maintainable. If conditional branching becomes complex, LangGraph can be nested inside Activities later.
 
 ## Model Tiers
 
@@ -70,15 +81,19 @@ Only **LLM_*** variables are required. Infrastructure deps are optional:
 | `GITLAB_URL` | ❌ | `https://gitlab.com` | GitLab integration |
 | `TEMPORAL_URL` | ❌ | `localhost:7233` | Temporal server |
 | `PIPELINE_MAX_LLM_CALLS` | ❌ | `25` | Budget per review |
+| `PIPELINE_MAX_COST_USD` | ❌ | `0.50` | Max cost per review |
 | `PIPELINE_COVE_ENABLED` | ❌ | `true` | CoVe verification |
+| `PIPELINE_TRIPLE_REVIEW` | ❌ | `true` | Triple review (disable for fast mode) |
+| `REVIEW_LANGUAGE` | ❌ | `en` | Review output language (`en`/`ru`) |
 
 ## Pipeline Steps
 
 1. **Context Assembly** — landscape scan + risk map (Neo4j or LLM fallback) + similar patterns (Qdrant)
-2. **Triple Review** — 3 parallel reviewers: Logic, Risk, Consistency
-3. **Consensus** — aggregates findings, marks escalated
-4. **CoVe** — single-step verification for escalated findings only
-5. **Report** — JSON with inline comments + summary for GitLab
+2. **Triple Review** — 3 parallel reviewers: Logic, Risk, Consistency (budget split by 3 to prevent overspend)
+3. **Feedback Gate** — adjusts findings based on historical false-positive patterns
+4. **Consensus** — aggregates findings, generates stable IDs, marks escalated
+5. **CoVe** — single-step verification for escalated findings only
+6. **Report** — JSON with inline comments + summary for GitLab
 
 ## MCP Tools
 
@@ -88,7 +103,14 @@ Only **LLM_*** variables are required. Infrastructure deps are optional:
 | `check_risk` | Risk analysis for changed files |
 | `find_patterns` | Semantic search for similar patterns |
 | `explain_symbol` | Explain symbol in codebase context |
-| `query_graph` | Cypher query to dependency graph |
+| `query_graph` | Read-only query of dependency graph (by symbol or file) |
+
+## Security
+
+- Webhook token validation uses `crypto.timingSafeEqual` (timing-attack resistant)
+- MCP `query_graph` only allows parameterized read-only queries — no raw Cypher
+- Budget split across parallel activities prevents 3× overspend
+- All database queries use parameterized statements
 
 ## License
 

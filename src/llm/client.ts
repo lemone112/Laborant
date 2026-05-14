@@ -169,6 +169,43 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ── Interface (DIP: depend on abstractions, not concretions) ─────────
+
+/**
+ * Abstraction for LLM client operations.
+ *
+ * All consumers should depend on this interface rather than the concrete
+ * {@link LLMClient} class. This enables:
+ * - Easy mocking in tests (no need to mock OpenAI SDK)
+ * - Swapping LLM providers without changing consumer code
+ * - Clean Architecture compliance (domain → interface, not domain → infra)
+ */
+export interface ILLMClient {
+  /**
+   * Send a chat completion request using the specified model tier.
+   */
+  chat(
+    tier: ModelTier,
+    messages: ChatCompletionMessageParam[],
+    options?: ChatOptions,
+  ): Promise<ChatResult>;
+
+  /**
+   * Convenience wrapper: system + user in one call.
+   */
+  complete(
+    tier: ModelTier,
+    system: string,
+    user: string,
+    options?: ChatOptions,
+  ): Promise<ChatResult>;
+
+  /**
+   * Generate embeddings for a list of text strings.
+   */
+  embed(texts: string[]): Promise<EmbedResult>;
+}
+
 // ── LLMClient ────────────────────────────────────────────────────────
 
 /**
@@ -188,7 +225,7 @@ function sleep(ms: number): Promise<void> {
  * 3 times with exponential backoff (1 s → 2 s → 4 s).  Non-retryable
  * errors and all errors after the final retry propagate to the caller.
  */
-export class LLMClient {
+export class LLMClient implements ILLMClient {
   /** The underlying OpenAI SDK instance. */
   private readonly openai: OpenAI;
 

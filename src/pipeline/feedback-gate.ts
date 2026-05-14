@@ -25,6 +25,31 @@ export interface FeedbackGateResult {
 }
 
 /**
+ * Check if a finding matches any of the frequent false-positive patterns.
+ * Extracted to avoid duplicating the matching logic.
+ *
+ * @param finding     - The consensus finding to check.
+ * @param patterns    - The list of frequent false-positive patterns.
+ * @returns The matched pattern, or undefined if no match.
+ */
+function findMatchingPattern(
+  finding: ConsensusFinding,
+  patterns: FalsePositivePattern[],
+): FalsePositivePattern | undefined {
+  return patterns.find((pattern) => {
+    const patternWords = pattern.pattern
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((w) => w.length > 3);
+
+    const issueLower = finding.issue.toLowerCase();
+    const matchCount = patternWords.filter((w) => issueLower.includes(w)).length;
+
+    return matchCount >= 2 && matchCount / patternWords.length >= 0.5;
+  });
+}
+
+/**
  * Apply feedback-based adjustments to consensus findings.
  *
  * For each finding, check if similar patterns were previously dismissed.
@@ -55,38 +80,16 @@ export async function applyFeedbackGate(
     }
 
     const adjustedFindings = findings.map((finding) => {
-      const isFalsePositive = frequentPatterns.some((pattern) => {
-        // Simple pattern matching: check if the finding issue text
-        // contains keywords from the false positive pattern
-        const patternWords = pattern.pattern
-          .toLowerCase()
-          .split(/\s+/)
-          .filter((w) => w.length > 3);
+      const matchedPattern = findMatchingPattern(finding, frequentPatterns);
 
-        const issueLower = finding.issue.toLowerCase();
-        const matchCount = patternWords.filter((w) => issueLower.includes(w)).length;
-
-        return matchCount >= 2 && matchCount / patternWords.length >= 0.5;
-      });
-
-      if (isFalsePositive) {
+      if (matchedPattern) {
         adjustedCount++;
         matchedPatterns.push(finding.issue);
-        // Find the matching pattern's dismissal count for the reason
-        const matchedPattern = frequentPatterns.find((p) => {
-          const patternWords = p.pattern
-            .toLowerCase()
-            .split(/\s+/)
-            .filter((w) => w.length > 3);
-          const issueLower = finding.issue.toLowerCase();
-          const matchCount = patternWords.filter((w) => issueLower.includes(w)).length;
-          return matchCount >= 2 && matchCount / patternWords.length >= 0.5;
-        });
         return {
           ...finding,
           confidence: Math.min(finding.confidence, 0.4),
           escalate: false, // Don't escalate previously-dismissed patterns
-          reason: `${finding.reason} [FEEDBACK: similar pattern dismissed ${matchedPattern?.count ?? 3}x]`,
+          reason: `${finding.reason} [FEEDBACK: similar pattern dismissed ${matchedPattern.count}x]`,
         };
       }
 

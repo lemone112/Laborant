@@ -200,25 +200,47 @@ export async function startMcpServer(): Promise<void> {
       const { SSEServerTransport } = await import('@modelcontextprotocol/sdk/server/sse.js');
       const http = await import('node:http');
 
+      // Store the active SSE transport so POST /messages can forward to it
+      let activeTransport: InstanceType<typeof SSEServerTransport> | null = null;
+
       const httpServer = http.createServer(async (req, res) => {
         if (req.method === 'GET' && req.url === '/sse') {
           // SSE connection endpoint — client connects here first
-          const transport = new SSEServerTransport('/messages', res);
-          await server.connect(transport);
+          activeTransport = new SSEServerTransport('/messages', res);
+          await server.connect(activeTransport);
           console.error('MCP SSE client connected');
 
           req.on('close', () => {
             console.error('MCP SSE client disconnected');
+            activeTransport = null;
           });
         } else if (req.method === 'POST' && req.url === '/messages') {
-          // Message endpoint — client sends JSON-RPC messages here
-          // The SSEServerTransport handles routing internally
+          // Message endpoint — forward the raw body to the active SSE transport
+          if (!activeTransport) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end('{"error":"No active SSE connection"}');
+            return;
+          }
+
           let body = '';
           req.on('data', (chunk) => { body += chunk; });
-          req.on('end', () => {
-            // Forward to the transport's message handler
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end('{}');
+          req.on('end', async () => {
+            try {
+              // The SSEServerTransport expects the POST body as-is
+              // It handles JSON-RPC routing internally via handlePostMessage
+              await (activeTransport as any).handlePostMessage?.(req, res, body);
+              // Fallback: if handlePostMessage is not available, respond OK
+              if (!res.headersSent) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end('{}');
+              }
+            } catch (err) {
+              console.error('MCP SSE message handling error:', err);
+              if (!res.headersSent) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end('{"error":"Message handling failed"}');
+              }
+            }
           });
         } else {
           res.writeHead(404);

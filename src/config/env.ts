@@ -65,6 +65,12 @@ const EnvSchema = z.object({
 
   API_PORT: z.coerce.number().int().positive().default(3000),
   REVIEW_LANGUAGE: z.enum(['en', 'ru']).default('en'),
+
+  // ── Repository ───────────────────────────────────────────────────────────
+
+  /** Fallback repo path for non-Temporal execution (MCP, CLI, direct mode).
+   *  Temporal workflows MUST receive repoPath explicitly as input. */
+  REPO_PATH_FALLBACK: z.string().min(1).optional().default('/repo'),
 });
 
 export type Env = Readonly<z.infer<typeof EnvSchema>>;

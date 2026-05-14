@@ -12,7 +12,7 @@
  * the model provider's JSON mode rather than fragile text splitting.
  */
 
-import type { LLMClient } from '../llm/client.js';
+import type { ILLMClient } from '../llm/client.js';
 import type { ModelTier } from '../llm/tiers.js';
 
 /**
@@ -46,7 +46,7 @@ import type { ModelTier } from '../llm/tiers.js';
  * ```
  */
 export async function requestStructured<T>(
-  llm: LLMClient,
+  llm: ILLMClient,
   tier: ModelTier,
   systemPrompt: string,
   userPrompt: string,

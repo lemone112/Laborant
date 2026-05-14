@@ -1,8 +1,7 @@
 import type { ReviewFinding } from '../../config/defaults.js';
-import type { LLMClient } from '../../llm/client.js';
+import type { ILLMClient } from '../../llm/client.js';
 import { coerceEmotion } from '../../util/finding-utils.js';
-import { loadPrompt } from '../../util/prompts.js';
-import { requestStructured } from '../../util/structured-output.js';
+import { runReview, type ReviewConfig } from './common.js';
 import type { PipelineContext } from '../context-assembly/builder.js';
 
 /**
@@ -21,38 +20,26 @@ const LOGIC_SCHEMA = `{
   ]
 }`;
 
-/**
- * Logic reviewer — finds correctness issues in changed code.
- * Uses `frontier` tier per PIPELINE_MODEL_MAP.
- *
- * Requests structured JSON output from the LLM and parses it directly,
- * eliminating the need for fragile regex-based field extraction.
- */
-export async function reviewLogic(context: PipelineContext, llm: LLMClient): Promise<ReviewFinding[]> {
-  const systemPrompt = await loadPrompt('review-logic');
-  const userPrompt = [
-    'Review this change for logic and correctness.',
-    '',
-    `<landscape>${JSON.stringify(context.landscape)}</landscape>`,
-    `<risk_map>${JSON.stringify(context.riskMap)}</risk_map>`,
-    `<diff>${context.diff}</diff>`,
-  ].join('\n');
-
-  const result = await requestStructured<{ findings?: unknown[] }>(
-    llm,
-    'frontier',
-    systemPrompt,
-    userPrompt,
-    LOGIC_SCHEMA,
-  );
-
-  const findings = Array.isArray(result.findings) ? result.findings : [];
-  return findings.map((f: any) => ({
+/** Review configuration for the Logic reviewer. */
+const LOGIC_CONFIG: ReviewConfig = {
+  promptName: 'review-logic',
+  tier: 'frontier',
+  schemaDescription: LOGIC_SCHEMA,
+  instruction: 'Review this change for logic and correctness.',
+  mapFinding: (f: any) => ({
     issue: String(f.issue ?? ''),
     location: String(f.location ?? 'unknown'),
     cornerCase: String(f.cornerCase ?? 'no'),
     confidence: Number(f.confidence ?? 0.5),
     emotion: coerceEmotion(f.emotion),
     evidence: String(f.evidence ?? ''),
-  }));
+  }),
+};
+
+/**
+ * Logic reviewer — finds correctness issues in changed code.
+ * Uses `frontier` tier per PIPELINE_MODEL_MAP.
+ */
+export async function reviewLogic(context: PipelineContext, llm: ILLMClient): Promise<ReviewFinding[]> {
+  return runReview(context, llm, LOGIC_CONFIG);
 }

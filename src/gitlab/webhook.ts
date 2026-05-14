@@ -92,7 +92,7 @@ export async function triggerReview(
     projectId,
     diff,
     changedFiles,
-    repoPath: process.cwd(),
+    repoPath: env.REPO_PATH_FALLBACK ?? process.cwd(),
   });
 
   if (!result.success || !result.output) {

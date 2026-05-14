@@ -1,5 +1,5 @@
 import type { ConsensusFinding, ReviewFinding } from '../../config/defaults.js';
-import type { LLMClient } from '../../llm/client.js';
+import type { ILLMClient } from '../../llm/client.js';
 import { loadPrompt } from '../../util/prompts.js';
 import { requestStructured } from '../../util/structured-output.js';
 import { createHash } from 'node:crypto';
@@ -48,7 +48,7 @@ export async function aggregateConsensus(
     risk: ReviewFinding[];
     consistency: ReviewFinding[];
   },
-  llm: LLMClient,
+  llm: ILLMClient,
 ): Promise<ConsensusResult> {
   const systemPrompt = await loadPrompt('consensus');
   const userPrompt = [

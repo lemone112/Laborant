@@ -24,12 +24,13 @@ import {
   type LandscapeArtifact,
   type RiskMapEntry,
 } from '../../config/defaults.js';
-import type { LLMClient } from '../../llm/client.js';
+import type { ILLMClient } from '../../llm/client.js';
 import type { BudgetTracker } from '../../llm/budget.js';
-import { createGraphClient, type DependentSymbol } from '../../repo-intelligence/graph-sync.js';
+import { createGraphClient, type DependentSymbol, type GraphClient } from '../../repo-intelligence/graph-sync.js';
 import {
   createEmbeddingClient,
   type SearchResult,
+  type EmbeddingClient,
 } from '../../repo-intelligence/embedding-sync.js';
 import { chunkDiff, type DiffChunk } from '../../util/diff-chunker.js';
 import { loadPrompt } from '../../util/prompts.js';
@@ -37,6 +38,25 @@ import { loadPrompt } from '../../util/prompts.js';
 // ────────────────────────────────────────────────────────────────────────────
 // Types
 // ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Optional infrastructure dependencies that can be injected into `buildContext`.
+ *
+ * When provided, these clients are used instead of creating new ones internally.
+ * This enables:
+ * - Easy mocking in tests (DI / DIP)
+ * - Reusing existing connections (performance)
+ * - Clean Architecture compliance (infrastructure injected, not hardcoded)
+ *
+ * When omitted, default clients are created from environment configuration,
+ * preserving backward compatibility.
+ */
+export interface ContextInfrastructure {
+  /** Neo4j graph client for dependency queries. Created from env if omitted. */
+  graphClient?: GraphClient;
+  /** Qdrant embedding client for semantic search. Created from env if omitted. */
+  embeddingClient?: EmbeddingClient;
+}
 
 /**
  * The fully assembled context object consumed by every downstream pipeline
@@ -99,7 +119,7 @@ export interface BuildContextInput {
  *   and intentional decisions.
  */
 async function scanLandscape(
-  llm: LLMClient,
+  llm: ILLMClient,
   repoPath: string,
   diff: string,
 ): Promise<LandscapeArtifact> {
@@ -157,10 +177,9 @@ async function scanLandscape(
  * @returns An array of {@link RiskMapEntry} objects.
  */
 async function buildRiskMapFromNeo4j(
+  graphClient: GraphClient,
   changedFiles: string[],
 ): Promise<RiskMapEntry[]> {
-  const graphClient = createGraphClient();
-
   try {
     const entries: RiskMapEntry[] = [];
 
@@ -184,7 +203,8 @@ async function buildRiskMapFromNeo4j(
 
     return entries;
   } finally {
-    await graphClient.close();
+    // Only close if we created the client ourselves (not injected)
+    // Caller is responsible for closing injected clients
   }
 }
 
@@ -202,7 +222,7 @@ async function buildRiskMapFromNeo4j(
  * @returns An array of {@link RiskMapEntry} objects.
  */
 async function buildRiskMapFromLLM(
-  llm: LLMClient,
+  llm: ILLMClient,
   changedFiles: string[],
   diff: string,
   landscape: LandscapeArtifact,
@@ -261,14 +281,15 @@ async function buildRiskMapFromLLM(
  * @returns An array of {@link SearchResult} objects ranked by similarity.
  */
 async function findSimilarPatterns(
-  llm: LLMClient,
+  llm: ILLMClient,
   diff: string,
+  embeddingClient?: EmbeddingClient,
 ): Promise<SearchResult[]> {
-  const embeddingClient = createEmbeddingClient(env.QDRANT_URL);
+  const embClient = embeddingClient ?? createEmbeddingClient(env.QDRANT_URL);
 
   try {
     // Ensure the collection exists before searching
-    await embeddingClient.ensureCollection('code_symbols');
+    await embClient.ensureCollection('code_symbols');
 
     // Use the LLM client's embed method as the EmbedFn
     const embedFn = async (texts: string[]): Promise<number[][]> => {
@@ -279,7 +300,7 @@ async function findSimilarPatterns(
     // Truncate diff for embedding to stay within token limits
     const queryText = diff.slice(0, 2000);
 
-    return embeddingClient.searchByCode(queryText, embedFn, 10);
+    return embClient.searchByCode(queryText, embedFn, 10);
   } catch (error: unknown) {
     // Non-fatal: similar patterns are supplementary context
     const message = error instanceof Error ? error.message : String(error);
@@ -324,8 +345,9 @@ async function findSimilarPatterns(
  */
 export async function buildContext(
   input: BuildContextInput,
-  llm: LLMClient,
+  llm: ILLMClient,
   budget: BudgetTracker,
+  infra?: ContextInfrastructure,
 ): Promise<PipelineContext> {
   const budgetBefore = budget.getStats().totalCostUSD;
 
@@ -346,8 +368,10 @@ export async function buildContext(
 
   // ── Step 2: Risk map (Neo4j → LLM fallback) ────────────────────────────
   let riskMap: RiskMapEntry[];
+  let ownedGraphClient: GraphClient | null = null;
   try {
-    riskMap = await buildRiskMapFromNeo4j(input.changedFiles);
+    const graphClient = infra?.graphClient ?? (ownedGraphClient = createGraphClient());
+    riskMap = await buildRiskMapFromNeo4j(graphClient, input.changedFiles);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn(
@@ -359,10 +383,13 @@ export async function buildContext(
       input.diff,
       landscape,
     );
+  } finally {
+    // Close only if we created the client (not injected)
+    await ownedGraphClient?.close();
   }
 
   // ── Step 3: Similar patterns (Qdrant, non-fatal) ───────────────────────
-  const similarPatterns = await findSimilarPatterns(llm, input.diff);
+  const similarPatterns = await findSimilarPatterns(llm, input.diff, infra?.embeddingClient);
 
   // ── Step 4: Assemble context ────────────────────────────────────────────
   const budgetAfter = budget.getStats().totalCostUSD;

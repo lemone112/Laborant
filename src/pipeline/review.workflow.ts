@@ -114,7 +114,9 @@ export async function reviewWorkflow(input: ReviewWorkflowInput): Promise<Review
     const remainingCalls = () => Math.max(0, maxCalls - totalCalls);
     const remainingCost = () => Math.max(0, maxCostUSD - totalCostUSD);
 
-    const repoPath = input.repoPath ?? process.cwd();
+    // repoPath MUST be provided by the caller — Temporal workflows must be deterministic
+    // and cannot access process.cwd() or other non-deterministic APIs
+    const repoPath = input.repoPath ?? '/repo';
 
     // ── Step 1: Context Assembly ──
     const contextResult = await buildContextActivity({
@@ -246,7 +248,7 @@ export async function runReviewPipeline(
   const { reviewRisk } = await import('./triple-review/risk.js');
   const { reviewConsistency } = await import('./triple-review/consistency.js');
   const { aggregateConsensus } = await import('./consensus/aggregator.js');
-  const { runCoVe } = await import('./cove/workflow.js');
+  const { runCoVe } = await import('./cove/verify.js');
   const { formatReport } = await import('./report/formatter.js');
   const { env } = await import('../config/env.js');
 
@@ -261,7 +263,7 @@ export async function runReviewPipeline(
     const context = await buildContext({
       diff: input.diff,
       changedFiles: input.changedFiles,
-      repoPath: input.repoPath ?? process.cwd(),
+      repoPath: input.repoPath ?? env.REPO_PATH_FALLBACK ?? process.cwd(),
     }, llm, budget);
 
     budget.checkBudget();

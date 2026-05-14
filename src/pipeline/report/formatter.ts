@@ -1,5 +1,5 @@
 import type { CoVeVerdict, ConsensusFinding, LandscapeArtifact, ReviewOutput } from '../../config/defaults.js';
-import type { LLMClient } from '../../llm/client.js';
+import type { ILLMClient } from '../../llm/client.js';
 import { loadPrompt } from '../../util/prompts.js';
 import { env } from '../../config/env.js';
 
@@ -11,7 +11,7 @@ export async function formatReport(
   verifiedFindings: ConsensusFinding[],
   coveResults: Record<string, CoVeVerdict>,
   landscape: LandscapeArtifact,
-  llm: LLMClient,
+  llm: ILLMClient,
 ): Promise<ReviewOutput> {
   const systemPrompt = await loadPrompt('report');
 

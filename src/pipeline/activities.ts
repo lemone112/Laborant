@@ -117,7 +117,7 @@ export async function runCoVeActivity(
   context: PipelineContext & { budgetRemainingCalls: number; budgetRemainingCostUSD: number },
 ): Promise<ActivityResult<Record<string, CoVeVerdict>>> {
   const { llm, budget } = await createFreshLLM(context.budgetRemainingCalls, context.budgetRemainingCostUSD);
-  const { runCoVe } = await import('./cove/workflow.js');
+  const { runCoVe } = await import('./cove/verify.js');
   const result = await runCoVe(findings, context, llm, budget);
   return { data: result, budget: budgetMeta(budget) };
 }

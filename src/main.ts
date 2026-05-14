@@ -9,7 +9,7 @@ async function main() {
   // Fail-fast if ENV is misconfigured
   validateEnv();
 
-  console.log('AI Code Review Pipeline starting...');
+  console.log('Laborant — AI Code Review Pipeline starting...');
   console.log(`LLM_BASE_URL: ${env.LLM_BASE_URL}`);
   console.log(`Cheap: ${env.LLM_CHEAP_MODEL} | Base: ${env.LLM_BASE_MODEL} | Frontier: ${env.LLM_FRONTIER_MODEL} | Embedding: ${env.LLM_EMBEDDING_MODEL}`);
 

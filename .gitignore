@@ -1,8 +1,6 @@
 node_modules/
 dist/
 .env
-.env.local
-*.log
-coverage/
-.turbo/
-.DS_Store
+*.lock
+bun.lock
+package-lock.json

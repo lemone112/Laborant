@@ -30,7 +30,7 @@ import { runReviewPipeline } from '../pipeline/review.workflow.js';
  */
 export async function startMcpServer(): Promise<void> {
   const server = new McpServer({
-    name: 'ai-code-review',
+    name: 'laborant',
     version: '1.0.0',
   });
 

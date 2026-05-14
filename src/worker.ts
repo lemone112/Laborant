@@ -23,11 +23,11 @@ async function main() {
         ...activities,
         ...reindexActivities,
       },
-      taskQueue: 'ai-code-review',
+      taskQueue: 'laborant',
       namespace: env.TEMPORAL_NAMESPACE,
     });
 
-    console.log('Worker connected. Listening for tasks on queue "ai-code-review"...');
+    console.log('Worker connected. Listening for tasks on queue "laborant"...');
     console.log('Registered activities: review pipeline + reindex pipeline');
     await worker.run();
   } catch (err) {

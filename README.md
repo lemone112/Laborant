@@ -1,19 +1,20 @@
-# AI Code Review Pipeline
+# Laborant
 
-> Production AI Code Review — Temporal + LangGraph + tree-sitter + MCP
+> AI Code Review — Temporal + tree-sitter + MCP
 
-Production-ready pipeline для ревью Merge Requests в GitLab. Оркестрация через Temporal, reasoning через LangGraph, структурный анализ через tree-sitter, векторный поиск через Qdrant, граф зависимостей через Neo4j. MCP-сервер для интеграции с AI-агентами.
+Laborant — pipeline для ревью Merge Requests в GitLab. Оркестрация через Temporal, структурный анализ через tree-sitter, векторный поиск через Qdrant (опционально), граф зависимостей через Neo4j (опционально). MCP-сервер для интеграции с AI-агентами.
 
 ## Architecture
 
 ```
-Layer 0: Repo Intelligence  ← tree-sitter + Neo4j + Qdrant (pre-computed)
-Layer 1: Context Assembly   ← Temporal workflow
-Layer 2: Reasoning          ← Triple Review (3 models) + Consensus
-Layer 3: Verification       ← CoVe (only for ESCALATE findings)
-Layer 4: Reporting          ← GitLab JSON + Russian summary
-Layer 5: Feedback Loop      ← PostgreSQL (human review tracking)
+Context Assembly → Triple Review → Consensus → [CoVe?] → Report
+      ↓                ↓              ↓          ↓         ↓
+  Landscape      Logic/Risk/    Aggregate    Verify    GitLab
+  + Risk Map     Consistency    findings     escalated  inline
+  + Patterns     (parallel)                  only       comments
 ```
+
+**Что обязательно:** LLM API (OpenAI-совместимый). Всё остальное — опционально и gracefully деградирует.
 
 ## Model Tiers
 
@@ -21,19 +22,19 @@ Layer 5: Feedback Loop      ← PostgreSQL (human review tracking)
 
 | Tier | ENV Variable | Use Case |
 |------|-------------|----------|
-| Cheap | `LLM_CHEAP_MODEL` | Landscape scan, question gen |
-| Base | `LLM_BASE_MODEL` | Risk map, consistency review, report |
-| Frontier | `LLM_FRONTIER_MODEL` | Logic/risk review, consensus, CoVe verdict |
+| Cheap | `LLM_CHEAP_MODEL` | Landscape scan |
+| Base | `LLM_BASE_MODEL` | Risk map, consistency review, CoVe verify, report |
+| Frontier | `LLM_FRONTIER_MODEL` | Logic/risk review, consensus |
 | Embedding | `LLM_EMBEDDING_MODEL` | Code vectorization |
 
 ## Quick Start
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/your-org/ai-code-review.git
-cd ai-code-review
-cp infra/.env.example .env
-# Edit .env with your values
+git clone https://github.com/lemone112/Laborant.git
+cd Laborant
+cp .env.example .env
+# Edit .env — only LLM_* vars are required
 
 # 2. Install dependencies
 npm install
@@ -51,32 +52,33 @@ npm run worker
 npm run mcp
 ```
 
-## Docker
-
-```bash
-# Development
-npm run docker:up
-
-# Production
-npm run docker:prod
-```
-
 ## ENV Configuration
 
-See [infra/.env.example](infra/.env.example) for all variables. Key points:
+Only **LLM_*** variables are required. Infrastructure deps are optional:
 
-- **LLM_BASE_URL** — internal IP of your OpenAI-compatible API gateway
-- **LLM_*_MODEL** — model aliases, swap freely
-- **PIPELINE_MAX_LLM_CALLS** — budget gate per MR review
-- **PIPELINE_COVE_ENABLED** — enable/disable CoVe verification
+| Variable | Required | Default | Notes |
+|----------|----------|---------|-------|
+| `LLM_BASE_URL` | ✅ | — | OpenAI-compatible API |
+| `LLM_API_KEY` | ✅ | — | API key |
+| `LLM_CHEAP_MODEL` | ✅ | — | e.g. `gpt-4o-mini` |
+| `LLM_BASE_MODEL` | ✅ | — | e.g. `gpt-4o` |
+| `LLM_FRONTIER_MODEL` | ✅ | — | e.g. `o3` |
+| `LLM_EMBEDDING_MODEL` | ✅ | — | e.g. `text-embedding-3-small` |
+| `NEO4J_URL` | ❌ | `bolt://localhost:7687` | Fallback: LLM-based risk map |
+| `QDRANT_URL` | ❌ | `http://localhost:6333` | Fallback: skip similar patterns |
+| `DATABASE_URL` | ❌ | `postgresql://localhost/...` | Feedback tracking |
+| `GITLAB_URL` | ❌ | `https://gitlab.com` | GitLab integration |
+| `TEMPORAL_URL` | ❌ | `localhost:7233` | Temporal server |
+| `PIPELINE_MAX_LLM_CALLS` | ❌ | `25` | Budget per review |
+| `PIPELINE_COVE_ENABLED` | ❌ | `true` | CoVe verification |
 
 ## Pipeline Steps
 
-1. **Context Assembly** — builds landscape + risk map + diff context
+1. **Context Assembly** — landscape scan + risk map (Neo4j or LLM fallback) + similar patterns (Qdrant)
 2. **Triple Review** — 3 parallel reviewers: Logic, Risk, Consistency
-3. **Consensus** — aggregates findings, marks ESCALATE
-4. **CoVe** — verification only for escalated findings (budget-gated)
-5. **Report** — Russian-language JSON for GitLab inline comments + summary
+3. **Consensus** — aggregates findings, marks escalated
+4. **CoVe** — single-step verification for escalated findings only
+5. **Report** — JSON with inline comments + summary for GitLab
 
 ## MCP Tools
 

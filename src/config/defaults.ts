@@ -84,9 +84,7 @@ export type PipelineStep =
   | 'reviewRisk'
   | 'reviewConsistency'
   | 'consensus'
-  | 'coveQuestionGen'
-  | 'coveVerifier'
-  | 'coveVerdict'
+  | 'coveVerify'
   | 'report';
 
 /**
@@ -103,9 +101,7 @@ function parseModelMap(): Readonly<Record<PipelineStep, ModelTier>> {
     reviewRisk: 'frontier',
     reviewConsistency: 'base',
     consensus: 'frontier',
-    coveQuestionGen: 'cheap',
-    coveVerifier: 'base',
-    coveVerdict: 'frontier',
+    coveVerify: 'base',
     report: 'base',
   };
 
@@ -115,8 +111,7 @@ function parseModelMap(): Readonly<Record<PipelineStep, ModelTier>> {
     // Validate keys and values
     const validSteps: PipelineStep[] = [
       'landscapeScan', 'riskMap', 'reviewLogic', 'reviewRisk',
-      'reviewConsistency', 'consensus', 'coveQuestionGen',
-      'coveVerifier', 'coveVerdict', 'report',
+      'reviewConsistency', 'consensus', 'coveVerify', 'report',
     ];
     const validTiers: ModelTier[] = ['cheap', 'base', 'frontier'];
     
@@ -165,9 +160,7 @@ function parseModelMap(): Readonly<Record<PipelineStep, ModelTier>> {
  * | reviewRisk         | frontier   | Risk assessment benefits from the most capable reasoning                 |
  * | reviewConsistency  | base       | Cross-reference check — structured but not exploratory                   |
  * | consensus          | frontier   | Reconciling multiple reviewer outputs demands strong reasoning           |
- * | coveQuestionGen    | cheap      | Generating verification questions is a lightweight generation task       |
- * | coveVerifier       | base       | Answering verification questions needs decent quality                    |
- * | coveVerdict        | frontier   | Final CoVe judgement must be authoritative                               |
+ * | coveVerify         | base       | Single-step verification — decent quality suffices                       |
  * | report             | base       | Summarisation and formatting — no frontier reasoning needed              |
  */
 export const PIPELINE_MODEL_MAP: Readonly<Record<PipelineStep, ModelTier>> = parseModelMap();

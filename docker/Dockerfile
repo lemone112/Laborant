@@ -3,7 +3,7 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
-COPY tsconfig.json ./
+COPY tsconfig.json biome.json ./
 COPY src/ src/
 COPY prompts/ prompts/
 RUN npm run build
@@ -12,7 +12,7 @@ FROM node:22-alpine
 
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --production
+RUN npm ci --omit=dev
 COPY --from=builder /app/dist dist/
 COPY prompts/ prompts/
 

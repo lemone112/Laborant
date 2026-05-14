@@ -5,6 +5,7 @@ import { Worker } from '@temporalio/worker';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import * as activities from './pipeline/activities.js';
+import * as reindexActivities from './repo-intelligence/reindex.activities.js';
 
 async function main() {
   validateEnv();
@@ -18,12 +19,16 @@ async function main() {
 
     const worker = await Worker.create({
       workflowsPath: join(__dirname, 'pipeline', 'review.workflow.js'),
-      activities,
+      activities: {
+        ...activities,
+        ...reindexActivities,
+      },
       taskQueue: 'ai-code-review',
       namespace: env.TEMPORAL_NAMESPACE,
     });
 
     console.log('Worker connected. Listening for tasks on queue "ai-code-review"...');
+    console.log('Registered activities: review pipeline + reindex pipeline');
     await worker.run();
   } catch (err) {
     console.error('Failed to start Temporal worker:', err);

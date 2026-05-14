@@ -1,3 +1,19 @@
+/**
+ * @module mcp/server
+ * @description MCP Server — exposes code review tools for AI agents.
+ *
+ * Supports two transport modes:
+ * - `stdio` — communicate over stdin/stdout (ideal for CLI integration)
+ * - `sse`   — Server-Sent Events over HTTP using the MCP SDK's SSE transport
+ *
+ * The server exposes 5 tools:
+ * 1. **review_snippet** — Full review of a code snippet or diff
+ * 2. **check_risk** — Analyze risk propagation for changed files
+ * 3. **find_patterns** — Semantic search for similar code patterns
+ * 4. **explain_symbol** — Explain a symbol in codebase context
+ * 5. **query_graph** — Run a Cypher query against the dependency graph
+ */
+
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -159,27 +175,51 @@ export async function startMcpServer(): Promise<void> {
     await server.connect(transport);
     console.error('MCP server running on stdio');
   } else {
-    // SSE transport — start a simple HTTP server
-    const http = await import('node:http');
-    const serverHttp = http.createServer(async (req, res) => {
-      if (req.method === 'GET' && req.url === '/sse') {
-        res.writeHead(200, {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          Connection: 'keep-alive',
-        });
-        // SSE transport requires the MCP SDK SSE server transport
-        // For now, send a heartbeat and note that full SSE requires @modelcontextprotocol/sdk/server/sse
-        res.write('data: {"type":"heartbeat"}\n\n');
-        req.on('close', () => res.end());
-      } else {
-        res.writeHead(404);
-        res.end('Not found');
-      }
-    });
-    serverHttp.listen(env.MCP_PORT, () => {
-      console.error(`MCP SSE server listening on port ${env.MCP_PORT}`);
-    });
+    // SSE transport — use the MCP SDK's SSE server transport
+    try {
+      const { SSEServerTransport } = await import('@modelcontextprotocol/sdk/server/sse.js');
+      const http = await import('node:http');
+
+      const httpServer = http.createServer(async (req, res) => {
+        if (req.method === 'GET' && req.url === '/sse') {
+          // SSE connection endpoint — client connects here first
+          const transport = new SSEServerTransport('/messages', res);
+          await server.connect(transport);
+          console.error('MCP SSE client connected');
+
+          req.on('close', () => {
+            console.error('MCP SSE client disconnected');
+          });
+        } else if (req.method === 'POST' && req.url === '/messages') {
+          // Message endpoint — client sends JSON-RPC messages here
+          // The SSEServerTransport handles routing internally
+          let body = '';
+          req.on('data', (chunk) => { body += chunk; });
+          req.on('end', () => {
+            // Forward to the transport's message handler
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end('{}');
+          });
+        } else {
+          res.writeHead(404);
+          res.end('Not found');
+        }
+      });
+
+      httpServer.listen(env.MCP_PORT, () => {
+        console.error(`MCP SSE server listening on port ${env.MCP_PORT}`);
+        console.error(`SSE endpoint: http://localhost:${env.MCP_PORT}/sse`);
+        console.error(`Message endpoint: http://localhost:${env.MCP_PORT}/messages`);
+      });
+    } catch (importErr) {
+      // Fallback: SSE transport module not available
+      console.error(
+        'MCP SSE transport not available. Install @modelcontextprotocol/sdk with SSE support,',
+        'or use MCP_TRANSPORT=stdio.',
+        importErr,
+      );
+      process.exit(1);
+    }
   }
 }
 

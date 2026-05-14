@@ -282,6 +282,9 @@ export function createGraphClient(
       files: string[],
       maxDepth: number = 3,
     ): Promise<DependentSymbol[]> {
+      // Validate maxDepth to prevent Cypher injection via string interpolation
+      const safeDepth = Math.max(1, Math.min(10, Math.floor(maxDepth)));
+
       const session: Session = driver.session();
 
       try {
@@ -289,7 +292,7 @@ export function createGraphClient(
           `
           MATCH (f:File)
           WHERE f.path IN $files
-          MATCH path = (dependent:Symbol)-[:CALLS|IMPORTS*1..${maxDepth}]->(f)-[:CONTAINS]->(target:Symbol)
+          MATCH path = (dependent:Symbol)-[:CALLS|IMPORTS*1..${safeDepth}]->(f)-[:CONTAINS]->(target:Symbol)
           WITH dependent, target, relationships(path) AS rels, length(path) AS depth
           RETURN dependent.qualifiedName AS qualifiedName,
                  dependent.name           AS name,

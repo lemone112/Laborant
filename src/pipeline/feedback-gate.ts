@@ -72,11 +72,21 @@ export async function applyFeedbackGate(
       if (isFalsePositive) {
         adjustedCount++;
         matchedPatterns.push(finding.issue);
+        // Find the matching pattern's dismissal count for the reason
+        const matchedPattern = frequentPatterns.find((p) => {
+          const patternWords = p.pattern
+            .toLowerCase()
+            .split(/\s+/)
+            .filter((w) => w.length > 3);
+          const issueLower = finding.issue.toLowerCase();
+          const matchCount = patternWords.filter((w) => issueLower.includes(w)).length;
+          return matchCount >= 2 && matchCount / patternWords.length >= 0.5;
+        });
         return {
           ...finding,
           confidence: Math.min(finding.confidence, 0.4),
           escalate: false, // Don't escalate previously-dismissed patterns
-          reason: `${finding.reason} [FEEDBACK: similar pattern dismissed ${frequentPatterns.find((p) => finding.issue.toLowerCase().includes(p.pattern.toLowerCase().split(/\s+/).filter((w) => w.length > 3)[0] ?? ''))?.count ?? 3}x]`,
+          reason: `${finding.reason} [FEEDBACK: similar pattern dismissed ${matchedPattern?.count ?? 3}x]`,
         };
       }
 

@@ -46,32 +46,54 @@ export interface ReviewWorkflowResult {
   riskMap: RiskMapEntry[] | null;
   consensus: ConsensusResult | null;
   coveResults: Record<string, CoVeVerdict> | null;
+  /** Total LLM calls consumed across all activities. */
+  totalLLMCalls: number;
+  /** Estimated total cost in USD across all activities. */
+  totalCostUSD: number;
   error?: string;
 }
 
 // ── Activity Interface ──
 // These MUST match the signatures in activities.ts (without LLMClient/BudgetTracker params)
+//
+// IMPORTANT: Budget tracking strategy.
+// Each activity runs in its own process and creates its own BudgetTracker.
+// To enforce a per-pipeline budget, activities accept a `budgetRemaining` parameter
+// so they can self-limit. The workflow aggregates call counts from activity results
+// to track total consumption.
+
+/** Result wrapper that includes budget usage metadata. */
+interface ActivityBudgetMeta {
+  /** Number of LLM calls made by this activity. */
+  llmCalls: number;
+  /** Estimated cost in USD of LLM calls in this activity. */
+  costUSD: number;
+}
 
 interface ReviewActivities {
-  buildContextActivity(input: BuildContextInput): Promise<PipelineContext>;
-  reviewLogicActivity(context: PipelineContext): Promise<ReviewFinding[]>;
-  reviewRiskActivity(context: PipelineContext): Promise<ReviewFinding[]>;
-  reviewConsistencyActivity(context: PipelineContext): Promise<ReviewFinding[]>;
+  buildContextActivity(input: BuildContextInput & { budgetRemainingCalls: number; budgetRemainingCostUSD: number }): Promise<PipelineContext & ActivityBudgetMeta>;
+  reviewLogicActivity(context: PipelineContext & { budgetRemainingCalls: number; budgetRemainingCostUSD: number }): Promise<(ReviewFinding[]) & ActivityBudgetMeta>;
+  reviewRiskActivity(context: PipelineContext & { budgetRemainingCalls: number; budgetRemainingCostUSD: number }): Promise<(ReviewFinding[]) & ActivityBudgetMeta>;
+  reviewConsistencyActivity(context: PipelineContext & { budgetRemainingCalls: number; budgetRemainingCostUSD: number }): Promise<(ReviewFinding[]) & ActivityBudgetMeta>;
   aggregateConsensusActivity(input: {
     logic: ReviewFinding[];
     risk: ReviewFinding[];
     consistency: ReviewFinding[];
-  }): Promise<ConsensusResult>;
+    budgetRemainingCalls: number;
+    budgetRemainingCostUSD: number;
+  }): Promise<ConsensusResult & ActivityBudgetMeta>;
   applyFeedbackGateActivity(findings: ConsensusFinding[], projectId: string): Promise<{
     findings: ConsensusFinding[];
     adjustedCount: number;
   }>;
-  runCoVeActivity(findings: ConsensusFinding[], context: PipelineContext): Promise<Record<string, CoVeVerdict>>;
+  runCoVeActivity(findings: ConsensusFinding[], context: PipelineContext & { budgetRemainingCalls: number; budgetRemainingCostUSD: number }): Promise<Record<string, CoVeVerdict> & ActivityBudgetMeta>;
   formatReportActivity(
     verifiedFindings: ConsensusFinding[],
     coveResults: Record<string, CoVeVerdict>,
     landscape: LandscapeArtifact,
-  ): Promise<ReviewOutput>;
+    budgetRemainingCalls: number,
+    budgetRemainingCostUSD: number,
+  ): Promise<ReviewOutput & ActivityBudgetMeta>;
 }
 
 // ── Activity Proxy ──
@@ -120,22 +142,62 @@ export async function reviewWorkflow(input: ReviewWorkflowInput): Promise<Review
   log.info('Starting review workflow', { projectId: input.projectId, mrIid: input.mrIid });
 
   try {
+    // ── Budget tracking ──
+    // The workflow tracks aggregate budget. Each activity receives
+    // the remaining budget so it can self-limit.
+    let totalCalls = 0;
+    let totalCostUSD = 0;
+    const maxCalls = 25; // PIPELINE_MAX_LLM_CALLS default
+    const maxCostUSD = 0.50; // PIPELINE_MAX_COST_USD default
+
+    const remainingCalls = () => Math.max(0, maxCalls - totalCalls);
+    const remainingCost = () => Math.max(0, maxCostUSD - totalCostUSD);
+
     // ── Step 1: Context Assembly ──
+    // NOTE: repoPath is required — do NOT use process.cwd() here.
+    // Temporal workflows must be deterministic; process.cwd() is non-deterministic.
+    const repoPath = input.repoPath;
+    if (!repoPath) {
+      throw new Error('repoPath is required for the review workflow');
+    }
+
     const context = await buildContextActivity({
       diff: input.diff,
       changedFiles: input.changedFiles,
-      repoPath: input.repoPath ?? process.cwd(),
+      repoPath,
+      budgetRemainingCalls: remainingCalls(),
+      budgetRemainingCostUSD: remainingCost(),
     });
+    totalCalls += context.llmCalls;
+    totalCostUSD += context.costUSD;
+    log.info('Context assembly complete', { calls: context.llmCalls, cost: context.costUSD, totalCalls, totalCostUSD });
 
     // ── Step 2: Triple Review (parallel) ──
-    const [logic, risk, consistency] = await Promise.all([
-      reviewLogicActivity(context),
-      reviewRiskActivity(context),
-      reviewConsistencyActivity(context),
+    const contextWithBudget = { ...context, budgetRemainingCalls: remainingCalls(), budgetRemainingCostUSD: remainingCost() };
+    const [logicResult, riskResult, consistencyResult] = await Promise.all([
+      reviewLogicActivity(contextWithBudget),
+      reviewRiskActivity(contextWithBudget),
+      reviewConsistencyActivity(contextWithBudget),
     ]);
+    totalCalls += (logicResult.llmCalls ?? 0) + (riskResult.llmCalls ?? 0) + (consistencyResult.llmCalls ?? 0);
+    totalCostUSD += (logicResult.costUSD ?? 0) + (riskResult.costUSD ?? 0) + (consistencyResult.costUSD ?? 0);
+    log.info('Triple review complete', { totalCalls, totalCostUSD });
+
+    // Extract findings from results (they may have budget metadata attached)
+    const logic = Array.isArray(logicResult) ? logicResult : (logicResult as any).findings ?? logicResult;
+    const risk = Array.isArray(riskResult) ? riskResult : (riskResult as any).findings ?? riskResult;
+    const consistency = Array.isArray(consistencyResult) ? consistencyResult : (consistencyResult as any).findings ?? consistencyResult;
 
     // ── Step 3: Consensus ──
-    const consensus = await aggregateConsensusActivity({ logic, risk, consistency });
+    const consensus = await aggregateConsensusActivity({
+      logic,
+      risk,
+      consistency,
+      budgetRemainingCalls: remainingCalls(),
+      budgetRemainingCostUSD: remainingCost(),
+    });
+    totalCalls += consensus.llmCalls ?? 0;
+    totalCostUSD += consensus.costUSD ?? 0;
 
     // ── Step 4: Feedback Gate ──
     let gatedFindings = consensus.findings;
@@ -153,14 +215,23 @@ export async function reviewWorkflow(input: ReviewWorkflowInput): Promise<Review
     let coveResults: Record<string, CoVeVerdict> = {};
     if (escalateCount > 0) {
       try {
-        coveResults = await runCoVeActivity(gatedFindings, context);
+        const coveContext = { ...context, budgetRemainingCalls: remainingCalls(), budgetRemainingCostUSD: remainingCost() };
+        const coveResult = await runCoVeActivity(gatedFindings, coveContext);
+        coveResults = coveResult;
+        totalCalls += (coveResult as any).llmCalls ?? 0;
+        totalCostUSD += (coveResult as any).costUSD ?? 0;
       } catch (err) {
         log.warn('CoVe failed (non-fatal)', { error: String(err) });
       }
     }
 
     // ── Step 6: Report ──
-    const output = await formatReportActivity(gatedFindings, coveResults, context.landscape);
+    const output = await formatReportActivity(
+      gatedFindings, coveResults, context.landscape,
+      remainingCalls(), remainingCost(),
+    );
+    totalCalls += output.llmCalls ?? 0;
+    totalCostUSD += output.costUSD ?? 0;
 
     return {
       success: true,
@@ -169,6 +240,8 @@ export async function reviewWorkflow(input: ReviewWorkflowInput): Promise<Review
       riskMap: context.riskMap,
       consensus: { ...consensus, findings: gatedFindings, escalateCount },
       coveResults,
+      totalLLMCalls: totalCalls,
+      totalCostUSD,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -180,6 +253,8 @@ export async function reviewWorkflow(input: ReviewWorkflowInput): Promise<Review
       riskMap: null,
       consensus: null,
       coveResults: null,
+      totalLLMCalls: 0,
+      totalCostUSD: 0,
       error: message,
     };
   }

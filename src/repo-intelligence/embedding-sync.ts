@@ -172,12 +172,13 @@ const EMBED_BATCH_SIZE = 50;
  * const results = await client.searchByCode('validate email', myEmbedFn, 5);
  * ```
  */
-export function createEmbeddingClient(url: string = env.QDRANT_URL): EmbeddingClient {
+export function createEmbeddingClient(url: string = env.QDRANT_URL, collectionName: string = DEFAULT_COLLECTION): EmbeddingClient {
   const client = new QdrantClient({ url });
+  const activeCollection = collectionName;
 
   return {
     client,
-    collectionName: DEFAULT_COLLECTION,
+    collectionName: activeCollection,
 
     // ── ensureCollection ──────────────────────────────────────────────────
     async ensureCollection(
@@ -260,10 +261,10 @@ export function createEmbeddingClient(url: string = env.QDRANT_URL): EmbeddingCl
         };
       });
 
-      // Upsert in batches
+      // Upsert in batches — use the active collection, not DEFAULT_COLLECTION
       for (let i = 0; i < points.length; i += UPSERT_BATCH_SIZE) {
         const batch = points.slice(i, i + UPSERT_BATCH_SIZE);
-        await client.upsert(DEFAULT_COLLECTION, {
+        await client.upsert(activeCollection, {
           wait: true,
           points: batch,
         });
@@ -273,7 +274,7 @@ export function createEmbeddingClient(url: string = env.QDRANT_URL): EmbeddingCl
       }
 
       console.log(
-        `[embedding-sync] Synced ${points.length} symbol embeddings to Qdrant`,
+        `[embedding-sync] Synced ${points.length} symbol embeddings to Qdrant (collection: ${activeCollection})`,
       );
     },
 
@@ -283,7 +284,7 @@ export function createEmbeddingClient(url: string = env.QDRANT_URL): EmbeddingCl
       limit: number = 10,
       filter?: object,
     ): Promise<SearchResult[]> {
-      const results = await client.search(DEFAULT_COLLECTION, {
+      const results = await client.search(activeCollection, {
         vector: queryEmbedding,
         limit,
         with_payload: true,
@@ -312,7 +313,7 @@ export function createEmbeddingClient(url: string = env.QDRANT_URL): EmbeddingCl
 
     // ── deleteByFile ──────────────────────────────────────────────────────
     async deleteByFile(fileName: string): Promise<void> {
-      await client.delete(DEFAULT_COLLECTION, {
+      await client.delete(activeCollection, {
         wait: true,
         filter: {
           must: [

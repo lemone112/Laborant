@@ -68,19 +68,27 @@ export function createGitLabClient(baseUrl: string = env.GITLAB_URL, token: stri
     async postInlineComment(
       projectId: string,
       mrIid: number,
-      comment: { file: string; line: number; body: string },
+      comment: { file: string; line: number; body: string; oldFile?: string },
       diffRefs: DiffRefs,
     ): Promise<void> {
+      const position: Record<string, any> = {
+        base_sha: diffRefs.base_sha,
+        start_sha: diffRefs.start_sha,
+        head_sha: diffRefs.head_sha,
+        new_path: comment.file,
+        new_line: comment.line,
+        position_type: 'text',
+      };
+      // Include old_path when available (required for renamed files)
+      if (comment.oldFile && comment.oldFile !== comment.file) {
+        position.old_path = comment.oldFile;
+      } else {
+        position.old_path = comment.file;
+      }
+
       const body: Record<string, any> = {
         body: comment.body,
-        position: {
-          base_sha: diffRefs.base_sha,
-          start_sha: diffRefs.start_sha,
-          head_sha: diffRefs.head_sha,
-          new_path: comment.file,
-          new_line: comment.line,
-          position_type: 'text',
-        },
+        position,
       };
 
       try {

@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  ai-code-review:
+    image: ai-code-review:latest
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 512M
+      restart_policy:
+        condition: on-failure
+    env_file: .env
+    ports:
+      - target: 3000
+        published: 3000
+        protocol: tcp
+        mode: ingress
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - review-net
+
+networks:
+  review-net:
+    external: true
+    name: ai-code-review-net

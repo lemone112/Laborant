@@ -27,9 +27,9 @@ describe('Pipeline Model Map', () => {
     }
   });
 
-  it('has exactly 10 pipeline steps', async () => {
+  it('has exactly 8 pipeline steps', async () => {
     const { PIPELINE_MODEL_MAP } = await import('../src/config/defaults.js');
-    expect(Object.keys(PIPELINE_MODEL_MAP)).toHaveLength(10);
+    expect(Object.keys(PIPELINE_MODEL_MAP)).toHaveLength(8);
   });
 });
 

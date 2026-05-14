@@ -1,8 +1,8 @@
 version: "3.8"
 
 services:
-  ai-code-review:
-    image: ai-code-review:latest
+  laborant:
+    image: laborant:latest
     deploy:
       replicas: 2
       resources:
@@ -27,4 +27,4 @@ services:
 networks:
   review-net:
     external: true
-    name: ai-code-review-net
+    name: laborant-net

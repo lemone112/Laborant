@@ -116,6 +116,16 @@ export async function runCoVeActivity(
   return Object.assign(result, budgetMeta(budget));
 }
 
+// ── Feedback Gate ──
+
+export async function applyFeedbackGateActivity(
+  findings: ConsensusFinding[],
+  projectId: string,
+): Promise<{ findings: ConsensusFinding[]; adjustedCount: number; matchedPatterns: string[] }> {
+  const { applyFeedbackGate } = await import('./feedback-gate.js');
+  return applyFeedbackGate(findings, projectId);
+}
+
 // ── Report ──
 
 export async function formatReportActivity(

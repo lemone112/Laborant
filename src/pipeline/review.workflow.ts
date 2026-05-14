@@ -62,6 +62,7 @@ interface ReviewActivities {
     budgetRemainingCalls: number;
     budgetRemainingCostUSD: number;
   }): Promise<ConsensusResult & ActivityBudgetMeta>;
+  applyFeedbackGateActivity(findings: ConsensusFinding[], projectId: string): Promise<{ findings: ConsensusFinding[]; adjustedCount: number; matchedPatterns: string[] }>;
   runCoVeActivity(findings: ConsensusFinding[], context: PipelineContext & { budgetRemainingCalls: number; budgetRemainingCostUSD: number }): Promise<Record<string, CoVeVerdict> & ActivityBudgetMeta>;
   formatReportActivity(
     verifiedFindings: ConsensusFinding[],
@@ -80,6 +81,7 @@ const {
   reviewRiskActivity,
   reviewConsistencyActivity,
   aggregateConsensusActivity,
+  applyFeedbackGateActivity,
   runCoVeActivity,
   formatReportActivity,
 } = proxyActivities<ReviewActivities>({
@@ -145,6 +147,15 @@ export async function reviewWorkflow(input: ReviewWorkflowInput): Promise<Review
     });
     totalCalls += consensus.llmCalls ?? 0;
     totalCostUSD += consensus.costUSD ?? 0;
+
+    // ── Step 3.5: Feedback Gate (adjust based on false positive patterns) ──
+    try {
+      const feedbackResult = await applyFeedbackGateActivity(consensus.findings, input.projectId);
+      consensus.findings = feedbackResult.findings;
+      consensus.escalateCount = feedbackResult.findings.filter(f => f.escalate).length;
+    } catch (err) {
+      log.warn('Feedback gate failed (non-fatal)', { error: String(err) });
+    }
 
     // ── Step 4: CoVe (escalated only) ──
     let coveResults: Record<string, CoVeVerdict> = {};
@@ -241,6 +252,12 @@ export async function runReviewPipeline(
 
     // Consensus
     const consensus = await aggregateConsensus({ logic, risk, consistency }, llm);
+
+    // Feedback gate — adjust findings based on historical false positive patterns
+    const { applyFeedbackGate } = await import('./feedback-gate.js');
+    const feedbackResult = await applyFeedbackGate(consensus.findings, input.projectId);
+    consensus.findings = feedbackResult.findings;
+    consensus.escalateCount = feedbackResult.findings.filter(f => f.escalate).length;
 
     // CoVe (escalated only)
     let coveResults: Record<string, CoVeVerdict> | null = null;

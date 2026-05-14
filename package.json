@@ -20,6 +20,8 @@
     "docker:prod": "docker compose -f docker/docker-compose.prod.yml up -d"
   },
   "dependencies": {
+    "@langchain/core": "^0.3.40",
+    "@langchain/langgraph": "^0.2.57",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@temporalio/activity": "^1.11.7",
     "@temporalio/client": "^1.11.7",
@@ -30,12 +32,14 @@
     "express": "^5.1.0",
     "neo4j-driver": "^5.28.1",
     "openai": "^4.95.1",
+    "pino": "^9.6.0",
     "@qdrant/js-client-rest": "^1.13.0",
     "tree-sitter": "^0.21.1",
     "tree-sitter-typescript": "^0.21.2",
     "tree-sitter-python": "^0.21.0",
     "tree-sitter-go": "^0.21.2",
     "tree-sitter-rust": "^0.21.0",
+    "pg": "^8.13.1",
     "zod": "^3.24.3",
     "zod-to-json-schema": "^3.24.3"
   },
@@ -43,6 +47,7 @@
     "@biomejs/biome": "^1.9.4",
     "@types/express": "^5.0.2",
     "@types/node": "^22.15.3",
+    "@types/pg": "^8.11.0",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3",
     "vitest": "^3.1.3"

@@ -1,17 +1,34 @@
 import type { ReviewFinding } from '../../config/defaults.js';
-import { EMOTION } from '../../config/defaults.js';
-import { llmClient } from '../../llm/client.js';
-import { budgetTracker } from '../../llm/budget.js';
+import type { LLMClient } from '../../llm/client.js';
+import { coerceEmotion } from '../../util/finding-utils.js';
 import { loadPrompt } from '../../util/prompts.js';
+import { requestStructured } from '../../util/structured-output.js';
 import type { PipelineContext } from '../context-assembly/builder.js';
+
+/**
+ * JSON schema describing the expected structured output from the logic reviewer.
+ */
+const LOGIC_SCHEMA = `{
+  "findings": [
+    {
+      "issue": "<what>",
+      "location": "<file:line>",
+      "cornerCase": "<yes/no>",
+      "confidence": <0.0-1.0>,
+      "emotion": "<certain|uneasy|speculating|confused|satisfied|concerned>",
+      "evidence": "<exact code anchor>"
+    }
+  ]
+}`;
 
 /**
  * Logic reviewer — finds correctness issues in changed code.
  * Uses `frontier` tier per PIPELINE_MODEL_MAP.
+ *
+ * Requests structured JSON output from the LLM and parses it directly,
+ * eliminating the need for fragile regex-based field extraction.
  */
-export async function reviewLogic(context: PipelineContext): Promise<ReviewFinding[]> {
-  budgetTracker.checkBudget();
-
+export async function reviewLogic(context: PipelineContext, llm: LLMClient): Promise<ReviewFinding[]> {
   const systemPrompt = await loadPrompt('review-logic');
   const userPrompt = [
     'Review this change for logic and correctness.',
@@ -19,53 +36,23 @@ export async function reviewLogic(context: PipelineContext): Promise<ReviewFindi
     `<landscape>${JSON.stringify(context.landscape)}</landscape>`,
     `<risk_map>${JSON.stringify(context.riskMap)}</risk_map>`,
     `<diff>${context.diff}</diff>`,
-    '',
-    'For each finding output:',
-    'ISSUE: <what>',
-    'LOCATION: <file:line>',
-    'CORNER_CASE: <yes/no>',
-    'CONFIDENCE: <0.0–1.0>',
-    'EMOTION: <certain | uneasy | speculating | confused | satisfied | concerned>',
-    'EVIDENCE: <exact code anchor>',
-    '',
-    'Be honest. Flag uncertainty explicitly.',
-    'NEVER output findings without EVIDENCE.',
-    'NEVER skip CONFIDENCE and EMOTION.',
   ].join('\n');
 
-  const result = await llmClient.complete('frontier', systemPrompt, userPrompt);
-  return parseFindings(result.content);
-}
+  const result = await requestStructured<{ findings?: unknown[] }>(
+    llm,
+    'frontier',
+    systemPrompt,
+    userPrompt,
+    LOGIC_SCHEMA,
+  );
 
-function parseFindings(raw: string): ReviewFinding[] {
-  const findings: ReviewFinding[] = [];
-  const blocks = raw.split(/(?=ISSUE:|RISK:|DEVIATION:)/g).filter(b => b.trim());
-
-  for (const block of blocks) {
-    const issue = extractField(block, 'ISSUE');
-    if (!issue) continue;
-
-    findings.push({
-      issue,
-      location: extractField(block, 'LOCATION') ?? 'unknown',
-      cornerCase: extractField(block, 'CORNER_CASE') ?? 'no',
-      confidence: Number.parseFloat(extractField(block, 'CONFIDENCE') ?? '0.5'),
-      emotion: coerceEmotion(extractField(block, 'EMOTION')),
-      evidence: extractField(block, 'EVIDENCE') ?? '',
-    });
-  }
-
-  return findings;
-}
-
-function extractField(block: string, field: string): string | undefined {
-  const regex = new RegExp(`${field}:\\s*(.+)`, 'i');
-  const match = block.match(regex);
-  return match?.[1]?.trim();
-}
-
-function coerceEmotion(raw: string | undefined): ReviewFinding['emotion'] {
-  const val = (raw ?? '').toLowerCase().trim();
-  if (Object.values(EMOTION).includes(val as any)) return val as ReviewFinding['emotion'];
-  return 'uneasy';
+  const findings = Array.isArray(result.findings) ? result.findings : [];
+  return findings.map((f: any) => ({
+    issue: String(f.issue ?? ''),
+    location: String(f.location ?? 'unknown'),
+    cornerCase: String(f.cornerCase ?? 'no'),
+    confidence: Number(f.confidence ?? 0.5),
+    emotion: coerceEmotion(f.emotion),
+    evidence: String(f.evidence ?? ''),
+  }));
 }

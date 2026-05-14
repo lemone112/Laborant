@@ -132,11 +132,20 @@ const EnvSchema = z.object({
   /** Personal access token for GitLab API authentication. */
   GITLAB_TOKEN: z.string().min(1),
 
+  /** Secret token for validating GitLab webhook requests. */
+  GITLAB_WEBHOOK_SECRET: z.string().min(1),
+
   /** URL of the Temporal server (e.g. `localhost:7233`). */
   TEMPORAL_URL: z.string().min(1),
 
+  /** Temporal namespace for the worker. @default 'default' */
+  TEMPORAL_NAMESPACE: z.string().min(1).default('default'),
+
   /** PostgreSQL connection string used by Prisma / the application database. */
   DATABASE_URL: z.string().min(1),
+
+  /** JSON string mapping pipeline steps to model tiers. @default '{"landscapeScan":"cheap","riskMap":"base","reviewLogic":"frontier","reviewRisk":"frontier","reviewConsistency":"base","consensus":"frontier","coveQuestionGen":"cheap","coveVerifier":"base","coveVerdict":"frontier","report":"base"}' */
+  PIPELINE_MODEL_MAP: z.string().min(1).default('{"landscapeScan":"cheap","riskMap":"base","reviewLogic":"frontier","reviewRisk":"frontier","reviewConsistency":"base","consensus":"frontier","coveQuestionGen":"cheap","coveVerifier":"base","coveVerdict":"frontier","report":"base"}'),
 
   // ── MCP ──────────────────────────────────────────────────────────────────
 
@@ -162,6 +171,12 @@ const EnvSchema = z.object({
    * @default 3000
    */
   API_PORT: z.coerce.number().int().positive().default(3000),
+
+  /**
+   * Language for the review report output.
+   * @default 'en'
+   */
+  REVIEW_LANGUAGE: z.enum(['en', 'ru']).default('en'),
 });
 
 // ---------------------------------------------------------------------------

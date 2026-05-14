@@ -1,6 +1,7 @@
 import type { CoVeVerdict, ConsensusFinding } from '../../config/defaults.js';
 import { env } from '../../config/env.js';
-import { budgetTracker } from '../../llm/budget.js';
+import type { LLMClient } from '../../llm/client.js';
+import type { BudgetTracker } from '../../llm/budget.js';
 import type { PipelineContext } from '../context-assembly/builder.js';
 import { generateQuestions } from './question-generator.js';
 import { verifyQuestions } from './verifier.js';
@@ -13,8 +14,10 @@ import { renderVerdict } from './verdict.js';
 export async function runCoVe(
   findings: ConsensusFinding[],
   context: PipelineContext,
-): Promise<Map<string, CoVeVerdict>> {
-  const results = new Map<string, CoVeVerdict>();
+  llm: LLMClient,
+  budget: BudgetTracker,
+): Promise<Record<string, CoVeVerdict>> {
+  const results: Record<string, CoVeVerdict> = {};
 
   if (!env.PIPELINE_COVE_ENABLED) {
     return results;
@@ -25,13 +28,14 @@ export async function runCoVe(
 
   for (const finding of limited) {
     try {
-      budgetTracker.checkBudget();
+      budget.checkBudget();
 
       // Step A: Generate verification questions
       const questions = await generateQuestions(
         finding,
         context.diff,
         context.landscape,
+        llm,
       );
 
       if (questions.length === 0) continue;
@@ -41,6 +45,7 @@ export async function runCoVe(
         questions,
         context.diff,
         context.landscape,
+        llm,
       );
 
       // Step C: Render verdict
@@ -49,9 +54,10 @@ export async function runCoVe(
         questions,
         answers,
         context.diff,
+        llm,
       );
 
-      results.set(finding.issue, verdict);
+      results[finding.issue] = verdict;
     } catch (error) {
       // Budget exceeded or LLM failure — skip remaining CoVe
       if (error instanceof Error && error.message.includes('Budget')) break;

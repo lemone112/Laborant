@@ -1,8 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { env } from '../config/env.js';
 import { createGitLabClient, type GitLabClient } from './api.js';
-import { runReviewPipeline, type ReviewWorkflowResult } from '../pipeline/review.workflow.js';
-import { budgetTracker } from '../llm/budget.js';
+import { runReviewPipeline } from '../pipeline/review.workflow.js';
 
 // ── Types ──
 
@@ -28,8 +27,8 @@ export function createWebhookRouter(): Router {
   router.post('/webhook/gitlab', async (req: Request, res: Response) => {
     // Validate token
     const token = req.headers['x-gitlab-token'] as string;
-    if (token !== env.GITLAB_TOKEN) {
-      res.status(403).json({ error: 'Invalid token' });
+    if (token !== env.GITLAB_WEBHOOK_SECRET) {
+      res.status(403).json({ error: 'Invalid webhook token' });
       return;
     }
 
@@ -67,7 +66,7 @@ export async function triggerReview(
   gitlab: GitLabClient,
   projectId: string,
   mrIid: number,
-): Promise<ReviewWorkflowResult> {
+): Promise<Awaited<ReturnType<typeof runReviewPipeline>>> {
   console.log(`Starting review for ${projectId}!${mrIid}`);
 
   // Fetch diff and diff_refs

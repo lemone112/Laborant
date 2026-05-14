@@ -1,20 +1,31 @@
 import type { CoVeAnswer, CoVeQuestion, CoVeVerdict, ConsensusFinding } from '../../config/defaults.js';
-import { llmClient } from '../../llm/client.js';
-import { budgetTracker } from '../../llm/budget.js';
+import type { LLMClient } from '../../llm/client.js';
 import { loadPrompt } from '../../util/prompts.js';
+import { requestStructured } from '../../util/structured-output.js';
+
+/**
+ * JSON schema describing the expected structured output from the
+ * CoVe verdict step.
+ */
+const VERDICT_SCHEMA = `{
+  "verdict": "<confirmed|revised|rejected>",
+  "reasoning": "<what verification revealed vs finding claimed>"
+}`;
 
 /**
  * CoVe Step C — render verdict comparing original finding against verification answers.
  * Uses `frontier` tier per PIPELINE_MODEL_MAP.
+ *
+ * Requests structured JSON output from the LLM and parses it directly,
+ * eliminating regex-based field extraction.
  */
 export async function renderVerdict(
   finding: ConsensusFinding,
   questions: CoVeQuestion[],
   answers: CoVeAnswer[],
   diff: string,
+  llm: LLMClient,
 ): Promise<CoVeVerdict> {
-  budgetTracker.checkBudget();
-
   const systemPrompt = await loadPrompt('cove-verdict');
 
   const qaText = questions.map((q, i) => {
@@ -32,24 +43,23 @@ export async function renderVerdict(
     '</verification>',
     '',
     `<diff>${diff}</diff>`,
-    '',
-    'VERDICT: <confirmed / revised / rejected>',
-    'REASONING: <what verification revealed vs finding claimed>',
   ].join('\n');
 
-  const result = await llmClient.complete('frontier', systemPrompt, userPrompt);
-  return parseVerdict(result.content, finding);
-}
+  const result = await requestStructured<{ verdict?: unknown; reasoning?: unknown }>(
+    llm,
+    'frontier',
+    systemPrompt,
+    userPrompt,
+    VERDICT_SCHEMA,
+  );
 
-function parseVerdict(raw: string, finding: ConsensusFinding): CoVeVerdict {
-  const verdictRaw = extractField(raw, 'VERDICT') ?? 'revised';
-
-  // Map common variants to the three canonical values
+  // Coerce the verdict to one of the three canonical values
+  const verdictRaw = String(result.verdict ?? 'revised').toLowerCase();
   let verdict: CoVeVerdict['verdict'];
-  const v = verdictRaw.toLowerCase();
-  if (v === 'confirmed' || v === 'partially_confirmed') {
+
+  if (verdictRaw === 'confirmed' || verdictRaw === 'partially_confirmed') {
     verdict = 'confirmed';
-  } else if (v === 'rejected' || v === 'refuted') {
+  } else if (verdictRaw === 'rejected' || verdictRaw === 'refuted') {
     verdict = 'rejected';
   } else {
     verdict = 'revised';
@@ -58,12 +68,6 @@ function parseVerdict(raw: string, finding: ConsensusFinding): CoVeVerdict {
   return {
     findingId: finding.issue,
     verdict,
-    reasoning: extractField(raw, 'REASONING') ?? '',
+    reasoning: String(result.reasoning ?? ''),
   };
-}
-
-function extractField(block: string, field: string): string | undefined {
-  const regex = new RegExp(`${field}:\\s*(.+)`, 'i');
-  const match = block.match(regex);
-  return match?.[1]?.trim();
 }

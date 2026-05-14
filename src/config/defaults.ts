@@ -32,7 +32,7 @@ import { env } from './env.js';
  * - `base`     — balanced quality/cost; used for structured analysis
  * - `frontier` — highest capability; reserved for judgement-heavy steps
  */
-export type ModelTier = 'cheap' | 'base' | 'frontier';
+export type ModelTier = 'cheap' | 'base' | 'frontier' | 'embedding';
 
 /**
  * Resolves a {@link ModelTier} to the concrete model name configured via
@@ -44,12 +44,10 @@ export type ModelTier = 'cheap' | 'base' | 'frontier';
  */
 export function resolveModelName(tier: ModelTier): string {
   switch (tier) {
-    case 'cheap':
-      return env.LLM_CHEAP_MODEL;
-    case 'base':
-      return env.LLM_BASE_MODEL;
-    case 'frontier':
-      return env.LLM_FRONTIER_MODEL;
+    case 'cheap': return env.LLM_CHEAP_MODEL;
+    case 'base': return env.LLM_BASE_MODEL;
+    case 'frontier': return env.LLM_FRONTIER_MODEL;
+    case 'embedding': return env.LLM_EMBEDDING_MODEL;
   }
 }
 
@@ -62,17 +60,15 @@ export function resolveModelName(tier: ModelTier): string {
  */
 export function resolveMaxTokens(tier: ModelTier): number {
   switch (tier) {
-    case 'cheap':
-      return env.LLM_CHEAP_MAX_TOKENS;
-    case 'base':
-      return env.LLM_BASE_MAX_TOKENS;
-    case 'frontier':
-      return env.LLM_FRONTIER_MAX_TOKENS;
+    case 'cheap': return env.LLM_CHEAP_MAX_TOKENS;
+    case 'base': return env.LLM_BASE_MAX_TOKENS;
+    case 'frontier': return env.LLM_FRONTIER_MAX_TOKENS;
+    case 'embedding': return 8192;
   }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Pipeline step → model tier mapping
+// Pipeline step → model tier mapping (from ENV)
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -94,13 +90,72 @@ export type PipelineStep =
   | 'report';
 
 /**
+ * Parse and validate the PIPELINE_MODEL_MAP from environment.
+ * 
+ * The map is stored as a JSON string in the PIPELINE_MODEL_MAP env var.
+ * Each key must be a valid PipelineStep, each value must be a valid ModelTier.
+ */
+function parseModelMap(): Readonly<Record<PipelineStep, ModelTier>> {
+  const defaultMap: Record<PipelineStep, ModelTier> = {
+    landscapeScan: 'cheap',
+    riskMap: 'base',
+    reviewLogic: 'frontier',
+    reviewRisk: 'frontier',
+    reviewConsistency: 'base',
+    consensus: 'frontier',
+    coveQuestionGen: 'cheap',
+    coveVerifier: 'base',
+    coveVerdict: 'frontier',
+    report: 'base',
+  };
+
+  try {
+    const parsed = JSON.parse(env.PIPELINE_MODEL_MAP);
+    
+    // Validate keys and values
+    const validSteps: PipelineStep[] = [
+      'landscapeScan', 'riskMap', 'reviewLogic', 'reviewRisk',
+      'reviewConsistency', 'consensus', 'coveQuestionGen',
+      'coveVerifier', 'coveVerdict', 'report',
+    ];
+    const validTiers: ModelTier[] = ['cheap', 'base', 'frontier'];
+    
+    const result: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!validSteps.includes(key as PipelineStep)) {
+        console.warn(`[config] Unknown pipeline step in PIPELINE_MODEL_MAP: "${key}", ignoring`);
+        continue;
+      }
+      if (!validTiers.includes(value as ModelTier)) {
+        console.warn(`[config] Invalid tier "${value}" for step "${key}" in PIPELINE_MODEL_MAP, using default`);
+        continue;
+      }
+      result[key] = value as string;
+    }
+    
+    // Fill in any missing steps with defaults
+    for (const step of validSteps) {
+      if (!(step in result)) {
+        result[step] = defaultMap[step];
+      }
+    }
+    
+    return result as unknown as Readonly<Record<PipelineStep, ModelTier>>;
+  } catch (err) {
+    console.warn(`[config] Failed to parse PIPELINE_MODEL_MAP, using defaults: ${err instanceof Error ? err.message : String(err)}`);
+    return defaultMap;
+  }
+}
+
+/**
  * Maps each pipeline step to its required LLM tier.
  *
  * The orchestrator reads this map at runtime to determine which model alias
- * and token budget to use for each step. Centralising the mapping here means
- * changing a step's tier only requires editing this single declaration.
+ * and token budget to use for each step. The mapping is configurable via the
+ * `PIPELINE_MODEL_MAP` environment variable (a JSON string); if parsing fails
+ * or keys are missing, sensible defaults are used.
  *
- * ### Tier assignment rationale
+ * ### Tier assignment rationale (defaults, overridable via ENV)
  *
  * | Step               | Tier       | Why                                                                      |
  * |--------------------|------------|--------------------------------------------------------------------------|
@@ -115,18 +170,7 @@ export type PipelineStep =
  * | coveVerdict        | frontier   | Final CoVe judgement must be authoritative                               |
  * | report             | base       | Summarisation and formatting — no frontier reasoning needed              |
  */
-export const PIPELINE_MODEL_MAP: Readonly<Record<PipelineStep, ModelTier>> = {
-  landscapeScan: 'cheap',
-  riskMap: 'base',
-  reviewLogic: 'frontier',
-  reviewRisk: 'frontier',
-  reviewConsistency: 'base',
-  consensus: 'frontier',
-  coveQuestionGen: 'cheap',
-  coveVerifier: 'base',
-  coveVerdict: 'frontier',
-  report: 'base',
-} as const;
+export const PIPELINE_MODEL_MAP: Readonly<Record<PipelineStep, ModelTier>> = parseModelMap();
 
 // ────────────────────────────────────────────────────────────────────────────
 // Domain enums

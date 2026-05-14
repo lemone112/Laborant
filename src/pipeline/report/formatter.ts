@@ -1,7 +1,7 @@
 import type { CoVeVerdict, ConsensusFinding, LandscapeArtifact, ReviewOutput } from '../../config/defaults.js';
-import { llmClient } from '../../llm/client.js';
-import { budgetTracker } from '../../llm/budget.js';
+import type { LLMClient } from '../../llm/client.js';
 import { loadPrompt } from '../../util/prompts.js';
+import { env } from '../../config/env.js';
 
 /**
  * Report formatter — transforms verified findings into GitLab MR JSON.
@@ -9,20 +9,21 @@ import { loadPrompt } from '../../util/prompts.js';
  */
 export async function formatReport(
   verifiedFindings: ConsensusFinding[],
-  coveResults: Map<string, CoVeVerdict>,
+  coveResults: Record<string, CoVeVerdict>,
   landscape: LandscapeArtifact,
+  llm: LLMClient,
 ): Promise<ReviewOutput> {
-  budgetTracker.checkBudget();
-
   const systemPrompt = await loadPrompt('report');
 
   const findingsWithContext = verifiedFindings.map(f => ({
     ...f,
-    coveVerdict: coveResults.get(f.issue)?.verdict ?? null,
+    coveVerdict: coveResults[f.issue]?.verdict ?? null,
   }));
 
   const userPrompt = [
-    'Напиши ревью на русском. Выведи только валидный JSON.',
+    env.REVIEW_LANGUAGE === 'ru'
+      ? 'Напиши ревью на русском. Выведи только валидный JSON.'
+      : 'Write the review in English. Output only valid JSON.',
     '',
     `<landscape>${JSON.stringify(landscape)}</landscape>`,
     `<verified_findings>${JSON.stringify(findingsWithContext)}</verified_findings>`,
@@ -34,7 +35,7 @@ export async function formatReport(
     '}',
   ].join('\n');
 
-  const result = await llmClient.complete('base', systemPrompt, userPrompt, {
+  const result = await llm.complete('base', systemPrompt, userPrompt, {
     jsonMode: true,
   });
 

@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      
+      - run: npm ci
+      
+      - name: Type check
+        run: npx tsc --noEmit
+      
+      - name: Lint
+        run: npx biome check src/
+      
+      - name: Test
+        run: npm test
+        env:
+          # Minimal env for test execution
+          LLM_BASE_URL: http://localhost:8080/v1
+          LLM_API_KEY: test-key
+          LLM_CHEAP_MODEL: test-cheap
+          LLM_BASE_MODEL: test-base
+          LLM_FRONTIER_MODEL: test-frontier
+          LLM_EMBEDDING_MODEL: test-embedding
+          QDRANT_URL: http://localhost:6333
+          NEO4J_URL: bolt://localhost:7687
+          NEO4J_USER: neo4j
+          NEO4J_PASSWORD: test
+          GITLAB_URL: https://gitlab.test.com
+          GITLAB_TOKEN: test-token
+          GITLAB_WEBHOOK_SECRET: test-secret
+          TEMPORAL_URL: localhost:7233
+          DATABASE_URL: postgresql://test:test@localhost:5432/test

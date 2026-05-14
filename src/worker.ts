@@ -1,11 +1,11 @@
 import 'dotenv/config';
 import { validateEnv } from './config/env.js';
 import { env } from './config/env.js';
+import { Worker } from '@temporalio/worker';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import * as activities from './pipeline/activities.js';
 
-/**
- * Temporal worker — registers all workflows and activities.
- * Run separately from the API server: `tsx src/worker.ts`
- */
 async function main() {
   validateEnv();
 
@@ -13,18 +13,17 @@ async function main() {
   console.log(`Connecting to Temporal at ${env.TEMPORAL_URL}`);
 
   try {
-    const { Worker } = await import('@temporalio/worker');
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
 
     const worker = await Worker.create({
-      workflowsPath: require.resolve('./pipeline/review.workflow.js'),
+      workflowsPath: join(__dirname, 'pipeline', 'review.workflow.js'),
+      activities,
       taskQueue: 'ai-code-review',
-      connection: {
-        address: env.TEMPORAL_URL,
-      },
       namespace: env.TEMPORAL_NAMESPACE,
     });
 
-    console.log('Worker connected. Listening for tasks...');
+    console.log('Worker connected. Listening for tasks on queue "ai-code-review"...');
     await worker.run();
   } catch (err) {
     console.error('Failed to start Temporal worker:', err);

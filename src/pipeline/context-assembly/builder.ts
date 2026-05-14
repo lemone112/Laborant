@@ -28,13 +28,14 @@ import {
   type LandscapeArtifact,
   type RiskMapEntry,
 } from '../../config/defaults.js';
-import { llmClient } from '../../llm/client.js';
-import { budgetTracker } from '../../llm/budget.js';
+import type { LLMClient } from '../../llm/client.js';
+import type { BudgetTracker } from '../../llm/budget.js';
 import { createGraphClient, type DependentSymbol } from '../../repo-intelligence/graph-sync.js';
 import {
   createEmbeddingClient,
   type SearchResult,
 } from '../../repo-intelligence/embedding-sync.js';
+import { chunkDiff, type DiffChunk } from '../../util/diff-chunker.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types
@@ -126,12 +127,14 @@ async function loadPrompt(filename: string): Promise<string> {
  * Uses the `cheap` tier (as declared in {@link PIPELINE_MODEL_MAP.landscapeScan})
  * because the landscape scan is a broad, shallow classification task.
  *
+ * @param llm        - The LLM client instance to use.
  * @param repoPath   - Absolute path to the repository root.
  * @param diff       - The raw diff (provides change context to the LLM).
  * @returns A {@link LandscapeArtifact} with architecture, patterns, conventions,
  *   and intentional decisions.
  */
 async function scanLandscape(
+  llm: LLMClient,
   repoPath: string,
   diff: string,
 ): Promise<LandscapeArtifact> {
@@ -145,16 +148,22 @@ async function scanLandscape(
     .map((line) => line.replace(/^[+-]{3}\s*/, ''))
     .join('\n');
 
+  // Chunk the diff if it's too large for a single LLM call
+  const chunks = chunkDiff(diff, { maxTokensPerChunk: 6000 });
+  const diffForLLM = chunks.length === 1
+    ? chunks[0]?.content ?? diff
+    : chunks.map((c: DiffChunk, i: number) => `--- Chunk ${i + 1}/${chunks.length} (${c.files.join(', ')}) ---\n${c.content}`).join('\n\n');
+
   const userContent = [
     `Repository path: ${repoPath}`,
     `Changed files tree:`,
     fileTree || '(no file markers in diff)',
     '',
     'Diff for context:',
-    diff.slice(0, 8000), // Truncate to avoid token overflow
+    diffForLLM.slice(0, 8000), // Truncate to avoid token overflow
   ].join('\n');
 
-  const result = await llmClient.complete(tier, prompt, userContent, {
+  const result = await llm.complete(tier, prompt, userContent, {
     jsonMode: true,
   });
 
@@ -191,7 +200,7 @@ async function buildRiskMapFromNeo4j(
     const entries: RiskMapEntry[] = [];
 
     for (const file of changedFiles) {
-      const dependents = await graphClient.getDependents(file);
+      const dependents = await graphClient.getDependents([file]);
 
       const direct = dependents
         .filter((d: DependentSymbol) => d.depth === 1)
@@ -221,12 +230,14 @@ async function buildRiskMapFromNeo4j(
  * and the risk-map prompt template to extract dependency relationships
  * from the diff itself.
  *
- * @param changedFiles - Relative paths of changed files.
- * @param diff         - The raw unified diff.
- * @param landscape    - The previously computed landscape artifact.
+ * @param llm           - The LLM client instance to use.
+ * @param changedFiles  - Relative paths of changed files.
+ * @param diff          - The raw unified diff.
+ * @param landscape     - The previously computed landscape artifact.
  * @returns An array of {@link RiskMapEntry} objects.
  */
 async function buildRiskMapFromLLM(
+  llm: LLMClient,
   changedFiles: string[],
   diff: string,
   landscape: LandscapeArtifact,
@@ -245,7 +256,7 @@ async function buildRiskMapFromLLM(
     diff.slice(0, 8000),
   ].join('\n');
 
-  const result = await llmClient.complete(tier, prompt, userContent, {
+  const result = await llm.complete(tier, prompt, userContent, {
     jsonMode: true,
   });
 
@@ -280,21 +291,23 @@ async function buildRiskMapFromLLM(
  * The diff is truncated and embedded using the LLM embedding model, then
  * used as a query vector against the `code_symbols` collection.
  *
+ * @param llm  - The LLM client instance to use.
  * @param diff - The raw unified diff.
  * @returns An array of {@link SearchResult} objects ranked by similarity.
  */
 async function findSimilarPatterns(
+  llm: LLMClient,
   diff: string,
 ): Promise<SearchResult[]> {
-  const embeddingClient = createEmbeddingClient();
+  const embeddingClient = createEmbeddingClient(env.QDRANT_URL);
 
   try {
     // Ensure the collection exists before searching
-    await embeddingClient.ensureCollection();
+    await embeddingClient.ensureCollection('code_symbols');
 
     // Use the LLM client's embed method as the EmbedFn
     const embedFn = async (texts: string[]): Promise<number[][]> => {
-      const result = await llmClient.embed(texts);
+      const result = await llm.embed(texts);
       return result.embeddings;
     };
 
@@ -328,7 +341,9 @@ async function findSimilarPatterns(
  * - **Neo4j unavailability** → falls back to LLM-based risk mapping.
  * - **Qdrant unavailability** → proceeds without similar patterns (non-fatal).
  *
- * @param input - The build context input (diff, changed files, repo path).
+ * @param input  - The build context input (diff, changed files, repo path).
+ * @param llm    - The LLM client instance to use for LLM calls.
+ * @param budget - The budget tracker to record usage.
  * @returns A fully populated {@link PipelineContext}.
  *
  * @example
@@ -337,20 +352,22 @@ async function findSimilarPatterns(
  *   diff: mrDiff,
  *   changedFiles: ['src/auth.ts', 'src/utils.ts'],
  *   repoPath: '/home/user/my-project',
- * });
+ * }, llm, budget);
  * console.log(context.landscape.architecture);
  * console.log(context.riskMap.length);
  * ```
  */
 export async function buildContext(
   input: BuildContextInput,
+  llm: LLMClient,
+  budget: BudgetTracker,
 ): Promise<PipelineContext> {
-  const budgetBefore = budgetTracker.getStats().totalCostUSD;
+  const budgetBefore = budget.getStats().totalCostUSD;
 
   // ── Step 1: Landscape scan ──────────────────────────────────────────────
   let landscape: LandscapeArtifact;
   try {
-    landscape = await scanLandscape(input.repoPath, input.diff);
+    landscape = await scanLandscape(llm, input.repoPath, input.diff);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn(`[context-assembly] Landscape scan failed, using fallback: ${message}`);
@@ -372,6 +389,7 @@ export async function buildContext(
       `[context-assembly] Neo4j unavailable, falling back to LLM risk map: ${message}`,
     );
     riskMap = await buildRiskMapFromLLM(
+      llm,
       input.changedFiles,
       input.diff,
       landscape,
@@ -379,10 +397,10 @@ export async function buildContext(
   }
 
   // ── Step 3: Similar patterns (Qdrant, non-fatal) ───────────────────────
-  const similarPatterns = await findSimilarPatterns(input.diff);
+  const similarPatterns = await findSimilarPatterns(llm, input.diff);
 
   // ── Step 4: Assemble context ────────────────────────────────────────────
-  const budgetAfter = budgetTracker.getStats().totalCostUSD;
+  const budgetAfter = budget.getStats().totalCostUSD;
 
   return {
     landscape,

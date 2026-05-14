@@ -16,6 +16,7 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
 import type { SymbolInfo } from './ast-indexer.js';
 import { env } from '../config/env.js';
+import { createHash } from 'node:crypto';
 
 // ────────────────────────────────────────────────────────────────────────────────
 // Types
@@ -116,23 +117,28 @@ export interface SearchResult {
 // ────────────────────────────────────────────────────────────────────────────────
 
 /**
- * Generates a deterministic UUID-like string for a symbol, suitable for use
- * as a Qdrant point ID. Uses a simple hash of the qualified name to ensure
- * the same symbol always maps to the same point ID.
+ * Generates a deterministic UUID v5 for a symbol, suitable for use
+ * as a Qdrant point ID. Uses SHA-1 hashing (UUID v5 algorithm) to
+ * ensure the same symbol always maps to the same point ID.
  *
  * @param qualifiedName - The fully-qualified symbol name (`"file::name"`).
- * @returns A deterministic string ID.
+ * @returns A deterministic UUID v5 string.
  */
+const UUID_V5_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'; // DNS namespace
+
 function deterministicId(qualifiedName: string): string {
-  // Simple deterministic hash-based ID generation
-  let hash = 0;
-  for (let i = 0; i < qualifiedName.length; i++) {
-    const char = qualifiedName.charCodeAt(i);
-    hash = ((hash << 5) - hash + char) | 0; // Convert to 32-bit int
-  }
-  // Format as a UUID-like string for Qdrant compatibility
-  const hex = Math.abs(hash).toString(16).padStart(8, '0');
-  return `${hex.slice(0, 8)}-${hex.slice(0, 4)}-5${hex.slice(1, 4)}-${hex.slice(0, 4)}-${hex.slice(0, 12).padStart(12, '0')}`;
+  const hash = createHash('sha1')
+    .update(UUID_V5_NAMESPACE + qualifiedName)
+    .digest('hex');
+
+  // Format as UUID v5 (version bits = 0101, variant bits = 10)
+  return [
+    hash.slice(0, 8),
+    hash.slice(8, 12),
+    '5' + hash.slice(13, 16), // version 5
+    ((parseInt(hash.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, '0') + hash.slice(18, 20), // variant
+    hash.slice(20, 32),
+  ].join('-');
 }
 
 // ────────────────────────────────────────────────────────────────────────────────

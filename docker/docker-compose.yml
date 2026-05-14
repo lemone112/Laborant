@@ -1,6 +1,4 @@
 # Local development stack
-version: "3.8"
-
 services:
   api:
     build:
@@ -14,6 +12,30 @@ services:
       - neo4j
       - qdrant
       - postgres
+      - feedback-db
+    command: ["node", "dist/main.js"]
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    env_file: ../.env
+    depends_on:
+      - temporal
+      - neo4j
+      - qdrant
+    command: ["node", "dist/worker.js"]
+
+  mcp:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    env_file: ../.env
+    depends_on:
+      - neo4j
+      - qdrant
+    command: ["node", "dist/mcp/server.js"]
+    stdin_open: true
 
   temporal:
     image: temporalio/auto-setup:latest
@@ -56,7 +78,19 @@ services:
     volumes:
       - pg-data:/var/lib/postgresql/data
 
+  feedback-db:
+    image: postgres:16-alpine
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: review
+      POSTGRES_PASSWORD: review_secret
+      POSTGRES_DB: feedback
+    volumes:
+      - feedback-data:/var/lib/postgresql/data
+
 volumes:
   neo4j-data:
   qdrant-data:
   pg-data:
+  feedback-data:

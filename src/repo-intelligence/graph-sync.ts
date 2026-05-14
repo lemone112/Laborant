@@ -135,119 +135,135 @@ export function createGraphClient(
 
       try {
         await session.executeWrite(async (tx: ManagedTransaction) => {
-          // 1. MERGE File nodes
+          // 1. MERGE File nodes in batch
           const files = [...new Set(symbols.map((s) => s.file))];
-          for (const file of files) {
+          await tx.run(
+            `
+            UNWIND $files AS filePath
+            MERGE (f:File {path: filePath})
+            SET f.lastIndexed = datetime()
+            `,
+            { files },
+          );
+
+          // 2. MERGE Symbol nodes in batch
+          const symbolData = symbols.map((sym) => ({
+            qualifiedName: `${sym.file}::${sym.name}`,
+            name: sym.name,
+            kind: sym.kind,
+            file: sym.file,
+            startLine: sym.startLine,
+            endLine: sym.endLine,
+            signature: sym.signature ?? null,
+          }));
+          
+          // Process in batches of 500 to avoid query size limits
+          const BATCH_SIZE = 500;
+          for (let i = 0; i < symbolData.length; i += BATCH_SIZE) {
+            const batch = symbolData.slice(i, i + BATCH_SIZE);
             await tx.run(
               `
-              MERGE (f:File {path: $path})
-              SET f.lastIndexed = datetime()
+              UNWIND $symbols AS s
+              MERGE (f:File {path: s.file})
+              MERGE (sym:Symbol {qualifiedName: s.qualifiedName})
+              SET sym.name      = s.name,
+                  sym.kind      = s.kind,
+                  sym.file      = s.file,
+                  sym.startLine = s.startLine,
+                  sym.endLine   = s.endLine,
+                  sym.signature = s.signature
+              MERGE (f)-[:CONTAINS]->(sym)
               `,
-              { path: file },
+              { symbols: batch },
             );
           }
 
-          // 2. MERGE Symbol nodes and CONTAINS relationships
-          for (const sym of symbols) {
-            const qualifiedName = `${sym.file}::${sym.name}`;
-
-            await tx.run(
-              `
-              MERGE (f:File {path: $file})
-              MERGE (s:Symbol {qualifiedName: $qualifiedName})
-              SET s.name        = $name,
-                  s.kind        = $kind,
-                  s.file        = $file,
-                  s.startLine   = $startLine,
-                  s.endLine     = $endLine,
-                  s.signature   = $signature
-              MERGE (f)-[:CONTAINS]->(s)
-              `,
-              {
-                qualifiedName,
-                name: sym.name,
-                kind: sym.kind,
-                file: sym.file,
-                startLine: sym.startLine,
-                endLine: sym.endLine,
-                signature: sym.signature ?? null,
-              },
-            );
-          }
-
-          // 3. Delete stale CALLS relationships for these symbols before
-          //    re-creating them (avoids accumulating outdated edges).
+          // 3. Delete stale CALLS relationships for these symbols
           const symbolQNames = symbols.map((s) => `${s.file}::${s.name}`);
           await tx.run(
             `
-            MATCH (s:Symbol)-[r:CALLS]->()
-            WHERE s.qualifiedName IN $qNames
+            UNWIND $qNames AS qName
+            MATCH (s:Symbol {qualifiedName: qName})-[r:CALLS]->()
             DELETE r
             `,
             { qNames: symbolQNames },
           );
 
-          // 4. CREATE CALLS relationships (from callsTo)
+          // 4. CREATE CALLS relationships in batch
+          const callsData: Array<{ callerQName: string; callee: string; calleeSimpleName: string }> = [];
           for (const sym of symbols) {
             if (sym.kind === 'import' || sym.kind === 'export') continue;
             if (sym.callsTo.length === 0) continue;
-
             const callerQName = `${sym.file}::${sym.name}`;
             for (const callee of sym.callsTo) {
-              // Try exact qualified match first, then simple name match
-              await tx.run(
-                `
-                MATCH (caller:Symbol {qualifiedName: $callerQName})
-                MATCH (callee:Symbol)
-                WHERE callee.qualifiedName = $callee
-                   OR callee.name = $calleeSimpleName
-                MERGE (caller)-[:CALLS]->(callee)
-                `,
-                {
-                  callerQName,
-                  callee,
-                  calleeSimpleName: callee.includes('.') ? callee.split('.').pop()! : callee,
-                },
-              );
+              callsData.push({
+                callerQName,
+                callee,
+                calleeSimpleName: callee.includes('.') ? callee.split('.').pop()! : callee,
+              });
             }
           }
 
-          // 5. CREATE IMPORTS relationships
-          for (const sym of symbols) {
-            if (sym.kind !== 'import') continue;
-
-            // Attempt to resolve the import target to a File node.
-            // Extract a best-guess file path from the import text.
-            const targetFile = resolveImportTarget(sym.name);
-            if (targetFile) {
-              const importerQName = `${sym.file}::${sym.name}`;
-              await tx.run(
-                `
-                MATCH (s:Symbol {qualifiedName: $importerQName})
-                MERGE (f:File {path: $targetFile})
-                MERGE (s)-[:IMPORTS]->(f)
-                `,
-                { importerQName, targetFile },
-              );
-            }
-          }
-
-          // 6. CREATE EXPORTS_TO relationships
-          for (const sym of symbols) {
-            if (sym.kind !== 'export') continue;
-
-            const exporterQName = `${sym.file}::${sym.name}`;
-            // Try to find the symbol being exported (same file, matching name)
+          for (let i = 0; i < callsData.length; i += BATCH_SIZE) {
+            const batch = callsData.slice(i, i + BATCH_SIZE);
             await tx.run(
               `
-              MATCH (exportSym:Symbol {qualifiedName: $exporterQName})
+              UNWIND $calls AS c
+              MATCH (caller:Symbol {qualifiedName: c.callerQName})
+              MATCH (callee:Symbol)
+              WHERE callee.qualifiedName = c.callee
+                 OR callee.name = c.calleeSimpleName
+              MERGE (caller)-[:CALLS]->(callee)
+              `,
+              { calls: batch },
+            );
+          }
+
+          // 5. CREATE IMPORTS relationships in batch
+          const importsData: Array<{ importerQName: string; targetFile: string }> = [];
+          for (const sym of symbols) {
+            if (sym.kind !== 'import') continue;
+            const targetFile = resolveImportTarget(sym.name);
+            if (targetFile) {
+              importsData.push({
+                importerQName: `${sym.file}::${sym.name}`,
+                targetFile,
+              });
+            }
+          }
+
+          if (importsData.length > 0) {
+            await tx.run(
+              `
+              UNWIND $imports AS imp
+              MATCH (s:Symbol {qualifiedName: imp.importerQName})
+              MERGE (f:File {path: imp.targetFile})
+              MERGE (s)-[:IMPORTS]->(f)
+              `,
+              { imports: importsData },
+            );
+          }
+
+          // 6. CREATE EXPORTS_TO relationships in batch
+          const exportsData = symbols
+            .filter((s) => s.kind === 'export')
+            .map((s) => ({
+              exporterQName: `${s.file}::${s.name}`,
+              file: s.file,
+            }));
+
+          if (exportsData.length > 0) {
+            await tx.run(
+              `
+              UNWIND $exports AS exp
+              MATCH (exportSym:Symbol {qualifiedName: exp.exporterQName})
               MATCH (targetSym:Symbol)
-              WHERE targetSym.file = $file
+              WHERE targetSym.file = exp.file
                 AND targetSym.kind <> 'export'
                 AND exportSym.name CONTAINS targetSym.name
               MERGE (exportSym)-[:EXPORTS_TO]->(targetSym)
               `,
-              { exporterQName, file: sym.file },
+              { exports: exportsData },
             );
           }
         });

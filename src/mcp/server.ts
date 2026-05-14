@@ -4,9 +4,9 @@ import { z } from 'zod';
 import { env } from '../config/env.js';
 import { createGraphClient } from '../repo-intelligence/graph-sync.js';
 import { createEmbeddingClient } from '../repo-intelligence/embedding-sync.js';
-import { llmClient } from '../llm/client.js';
+import { createLLMClient } from '../llm/client.js';
+import { createBudgetTracker } from '../llm/budget.js';
 import { runReviewPipeline } from '../pipeline/review.workflow.js';
-import { budgetTracker } from '../llm/budget.js';
 
 /**
  * MCP Server — exposes code review tools for AI agents.
@@ -27,8 +27,7 @@ export async function startMcpServer(): Promise<void> {
       language: z.string().describe('Programming language'),
       context: z.string().optional().describe('Additional context about the code'),
     },
-    async ({ code, language, context }) => {
-      budgetTracker.reset();
+    async ({ code, language: _language, context: _context }) => {
       const result = await runReviewPipeline({
         mrIid: 0,
         projectId: 'mcp',
@@ -57,7 +56,7 @@ export async function startMcpServer(): Promise<void> {
       files: z.array(z.string()).describe('List of changed file paths'),
       repoPath: z.string().describe('Path to the repository'),
     },
-    async ({ files, repoPath }) => {
+    async ({ files, repoPath: _repoPath }) => {
       try {
         const graph = createGraphClient(env.NEO4J_URL, env.NEO4J_USER, env.NEO4J_PASSWORD);
         const dependents = await graph.getDependents(files, 3);
@@ -79,8 +78,14 @@ export async function startMcpServer(): Promise<void> {
     },
     async ({ query, limit }) => {
       try {
+        const budget = createBudgetTracker();
+        const llm = createLLMClient(budget);
         const embClient = createEmbeddingClient(env.QDRANT_URL);
-        const results = await embClient.searchByCode(query, (texts) => llmClient.embed(texts), limit);
+        const embedFn = async (texts: string[]): Promise<number[][]> => {
+          const result = await llm.embed(texts);
+          return result.embeddings;
+        };
+        const results = await embClient.searchByCode(query, embedFn, limit);
         return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: `Pattern search failed: ${err}` }] };
@@ -109,12 +114,14 @@ export async function startMcpServer(): Promise<void> {
           ? `Symbol "${symbolName}" is used by: ${dependents.map((d: any) => d.file).join(', ')}`
           : `No dependency data for "${symbolName}"`;
 
-        const explanation = await llmClient.complete('base',
+        const budget = createBudgetTracker();
+        const llm = createLLMClient(budget);
+        const explanation = await llm.complete('base',
           'You are a code explainer. Explain the given symbol concisely based on available context.',
           context,
         );
 
-        return { content: [{ type: 'text', text: explanation }] };
+        return { content: [{ type: 'text', text: explanation.content }] };
       } catch (err) {
         return { content: [{ type: 'text', text: `Explain failed: ${err}` }] };
       }
@@ -131,7 +138,6 @@ export async function startMcpServer(): Promise<void> {
     },
     async ({ query, params }) => {
       try {
-        const graph = createGraphClient(env.NEO4J_URL, env.NEO4J_USER, env.NEO4J_PASSWORD);
         // For raw queries, use the driver directly
         const neo4j = await import('neo4j-driver');
         const driver = neo4j.default.driver(env.NEO4J_URL, neo4j.default.auth.basic(env.NEO4J_USER, env.NEO4J_PASSWORD));
@@ -153,7 +159,32 @@ export async function startMcpServer(): Promise<void> {
     await server.connect(transport);
     console.error('MCP server running on stdio');
   } else {
-    console.error(`MCP SSE transport not yet implemented — use stdio`);
-    process.exit(1);
+    // SSE transport — start a simple HTTP server
+    const http = await import('node:http');
+    const serverHttp = http.createServer(async (req, res) => {
+      if (req.method === 'GET' && req.url === '/sse') {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        });
+        // SSE transport requires the MCP SDK SSE server transport
+        // For now, send a heartbeat and note that full SSE requires @modelcontextprotocol/sdk/server/sse
+        res.write('data: {"type":"heartbeat"}\n\n');
+        req.on('close', () => res.end());
+      } else {
+        res.writeHead(404);
+        res.end('Not found');
+      }
+    });
+    serverHttp.listen(env.MCP_PORT, () => {
+      console.error(`MCP SSE server listening on port ${env.MCP_PORT}`);
+    });
   }
 }
+
+// Self-start when run directly
+startMcpServer().catch((err) => {
+  console.error('MCP server failed to start:', err);
+  process.exit(1);
+});

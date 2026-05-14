@@ -43,7 +43,7 @@ import type { EmbeddingCreateParams } from 'openai/resources/embeddings.js';
 import { env } from '../config/env.js';
 import { getTierConfig } from './tiers.js';
 import type { ModelTier } from './tiers.js';
-import { budgetTracker, BudgetTracker } from './budget.js';
+import { BudgetTracker, createBudgetTracker } from './budget.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -207,7 +207,7 @@ export class LLMClient {
       baseURL: env.LLM_BASE_URL,
       apiKey: env.LLM_API_KEY,
     });
-    this.budget = options?.budget ?? budgetTracker;
+    this.budget = options?.budget ?? createBudgetTracker();
   }
 
   // ── Chat ──────────────────────────────────────────────────────────
@@ -446,9 +446,9 @@ export class LLMClient {
 }
 
 /**
- * Default singleton instance for convenience.
- *
- * Import and use directly, or create a dedicated instance with
- * `new LLMClient({ budget })`.
+ * Create a new LLMClient with a fresh budget tracker for a single pipeline run.
+ * Each review MUST use its own client to avoid budget conflicts.
  */
-export const llmClient = new LLMClient();
+export function createLLMClient(budget: BudgetTracker): LLMClient {
+  return new LLMClient({ budget });
+}

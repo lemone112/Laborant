@@ -259,9 +259,9 @@ export class BudgetTracker {
 }
 
 /**
- * Default singleton instance for convenience.
- *
- * Import and use directly, or create a dedicated instance with
- * `new BudgetTracker(options)`.
+ * Create a fresh BudgetTracker instance for a single pipeline run.
+ * Each review MUST use its own tracker to avoid budget conflicts.
  */
-export const budgetTracker = new BudgetTracker();
+export function createBudgetTracker(options?: ConstructorParameters<typeof BudgetTracker>[0]): BudgetTracker {
+  return new BudgetTracker(options);
+}

@@ -1,7 +1,7 @@
 import type { ConsensusFinding, ReviewFinding } from '../../config/defaults.js';
-import { llmClient } from '../../llm/client.js';
-import { budgetTracker } from '../../llm/budget.js';
+import type { LLMClient } from '../../llm/client.js';
 import { loadPrompt } from '../../util/prompts.js';
+import { requestStructured } from '../../util/structured-output.js';
 
 export interface ConsensusResult {
   findings: ConsensusFinding[];
@@ -11,16 +11,44 @@ export interface ConsensusResult {
 }
 
 /**
+ * JSON schema describing the expected structured output from the consensus step.
+ *
+ * The LLM returns findings with `status`, `sources`, and `locations` as arrays,
+ * plus top-level counts that are used directly instead of re-counting.
+ */
+const CONSENSUS_SCHEMA = `{
+  "findings": [
+    {
+      "status": "<agreed|disputed>",
+      "issue": "<unified description>",
+      "sources": ["<which models flagged this>"],
+      "locations": ["<all referenced locations>"],
+      "confidence": <0.0-1.0>,
+      "escalate": <true|false>,
+      "reason": "<why agreed or why contested>"
+    }
+  ],
+  "agreedCount": <number>,
+  "contestedCount": <number>,
+  "escalateCount": <number>
+}`;
+
+/**
  * Consensus analyzer — aggregates findings from three reviewers.
  * Uses `frontier` tier per PIPELINE_MODEL_MAP.
+ *
+ * Requests structured JSON output from the LLM and parses it directly,
+ * using the `agreedCount`/`contestedCount`/`escalateCount` from the
+ * response instead of re-counting.
  */
-export async function aggregateConsensus(input: {
-  logic: ReviewFinding[];
-  risk: ReviewFinding[];
-  consistency: ReviewFinding[];
-}): Promise<ConsensusResult> {
-  budgetTracker.checkBudget();
-
+export async function aggregateConsensus(
+  input: {
+    logic: ReviewFinding[];
+    risk: ReviewFinding[];
+    consistency: ReviewFinding[];
+  },
+  llm: LLMClient,
+): Promise<ConsensusResult> {
   const systemPrompt = await loadPrompt('consensus');
   const userPrompt = [
     'Aggregate these three reviews into consensus output.',
@@ -33,63 +61,62 @@ export async function aggregateConsensus(input: {
     '- AGREED: 2+ reviewers flag same location/issue',
     '- CONTESTED: only 1 reviewer flags, or reviewers contradict',
     '- If any source CONFIDENCE < 0.8 — flag for deeper review',
-    '',
-    'For each finding:',
-    'STATUS: <agreed/contested>',
-    'ISSUE: <unified description>',
-    'SOURCES: <which models flagged this>',
-    'LOCATIONS: <all referenced locations>',
-    'CONFIDENCE: <average of source confidences>',
-    'ESCALATE: <yes/no>',
-    'REASON: <why agreed or why contested>',
-    '',
-    'After all findings:',
-    'AGREED_COUNT: <n>',
-    'CONTESTED_COUNT: <n>',
-    'ESCALATE_COUNT: <n>',
   ].join('\n');
 
-  const result = await llmClient.complete('frontier', systemPrompt, userPrompt);
-  return parseConsensus(result.content);
-}
+  const result = await requestStructured<{
+    findings?: unknown[];
+    agreedCount?: unknown;
+    contestedCount?: unknown;
+    escalateCount?: unknown;
+  }>(
+    llm,
+    'frontier',
+    systemPrompt,
+    userPrompt,
+    CONSENSUS_SCHEMA,
+  );
 
-function parseConsensus(raw: string): ConsensusResult {
-  const findings: ConsensusFinding[] = [];
-  const blocks = raw.split(/(?=STATUS:)/g).filter(b => b.trim());
+  const rawFindings = Array.isArray(result.findings) ? result.findings : [];
 
-  for (const block of blocks) {
-    const statusRaw = extractField(block, 'STATUS');
-    if (!statusRaw) continue;
-
-    // Map 'contested' from prompt to 'disputed' in interface
+  const findings: ConsensusFinding[] = rawFindings.map((f: any) => {
+    const statusRaw = String(f.status ?? 'disputed').toLowerCase();
     const status: ConsensusFinding['status'] =
-      statusRaw.toLowerCase() === 'contested' ? 'disputed'
-      : statusRaw.toLowerCase() === 'dismissed' ? 'dismissed'
-      : 'agreed';
+      statusRaw === 'agreed' ? 'agreed'
+      : statusRaw === 'dismissed' ? 'dismissed'
+      : 'disputed';
 
-    const confidence = Number.parseFloat(extractField(block, 'CONFIDENCE') ?? '0.5');
-    const escalate = extractField(block, 'ESCALATE')?.toLowerCase() === 'yes' || confidence < 0.8;
+    const confidence = Number(f.confidence ?? 0.5);
+    const escalate = Boolean(f.escalate) || confidence < 0.8;
 
-    findings.push({
+    const sources = Array.isArray(f.sources)
+      ? f.sources.map((s: any) => String(s))
+      : [];
+    const locations = Array.isArray(f.locations)
+      ? f.locations.map((l: any) => String(l))
+      : [];
+
+    return {
       status,
-      issue: extractField(block, 'ISSUE') ?? '',
-      sources: (extractField(block, 'SOURCES') ?? '').split(',').map(s => s.trim()),
-      locations: (extractField(block, 'LOCATIONS') ?? '').split(',').map(s => s.trim()),
+      issue: String(f.issue ?? ''),
+      sources,
+      locations,
       confidence,
       escalate,
-      reason: extractField(block, 'REASON') ?? '',
-    });
-  }
+      reason: String(f.reason ?? ''),
+    };
+  });
 
-  const agreedCount = findings.filter(f => f.status === 'agreed').length;
-  const contestedCount = findings.filter(f => f.status === 'disputed').length;
-  const escalateCount = findings.filter(f => f.escalate).length;
+  // Use the counts from the LLM response directly when available;
+  // fall back to local counting for robustness.
+  const agreedCount = typeof result.agreedCount === 'number'
+    ? result.agreedCount
+    : findings.filter(f => f.status === 'agreed').length;
+  const contestedCount = typeof result.contestedCount === 'number'
+    ? result.contestedCount
+    : findings.filter(f => f.status === 'disputed').length;
+  const escalateCount = typeof result.escalateCount === 'number'
+    ? result.escalateCount
+    : findings.filter(f => f.escalate).length;
 
   return { findings, agreedCount, contestedCount, escalateCount };
-}
-
-function extractField(block: string, field: string): string | undefined {
-  const regex = new RegExp(`${field}:\\s*(.+)`, 'i');
-  const match = block.match(regex);
-  return match?.[1]?.trim();
 }

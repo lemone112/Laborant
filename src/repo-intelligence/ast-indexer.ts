@@ -19,6 +19,11 @@ import { readFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 
 // ────────────────────────────────────────────────────────────────────────────────
+// Parser init guard
+// ────────────────────────────────────────────────────────────────────────────────
+
+
+// ────────────────────────────────────────────────────────────────────────────────
 // Types
 // ────────────────────────────────────────────────────────────────────────────────
 
@@ -141,7 +146,7 @@ function isSupportedFile(file: string): boolean {
  * const symbols = indexFile('src/utils.ts', fs.readFileSync('src/utils.ts', 'utf8'));
  * ```
  */
-export function indexFile(filePath: string, content: string): SymbolInfo[] {
+export async function indexFile(filePath: string, content: string): Promise<SymbolInfo[]> {
   const language = selectLanguage(filePath);
   const parser = new Parser();
   parser.setLanguage(language);
@@ -496,6 +501,9 @@ function extractCalleeName(callNode: any): string | undefined {
 export async function indexRepository(repoPath: string): Promise<SymbolInfo[]> {
   const allSymbols: SymbolInfo[] = [];
 
+  // Patterns to skip
+  const skipPatterns = /node_modules|\.git|\/dist\/|\/build\/|\/vendor\/|__pycache__|\.next/;
+
   // Glob patterns for supported languages
   const patterns = [
     '**/*.ts',
@@ -508,15 +516,12 @@ export async function indexRepository(repoPath: string): Promise<SymbolInfo[]> {
   // Collect all matching file paths
   const filePaths: string[] = [];
   for (const pattern of patterns) {
-    const globIter = glob(join(repoPath, pattern), {
-      exclude: (name: string) => {
-        // Skip node_modules, .git, dist, build, vendor, __pycache__
-        return /node_modules|\.git|\/dist\/|\/build\/|\/vendor\/|__pycache__|\.next/.test(name);
-      },
-    });
+    const globIter = glob(join(repoPath, pattern));
     for await (const entry of globIter) {
-      // Node.js glob yields string paths directly
-      filePaths.push(entry);
+      // Filter out unwanted directories
+      if (!skipPatterns.test(entry)) {
+        filePaths.push(entry);
+      }
     }
   }
 
@@ -538,7 +543,7 @@ export async function indexRepository(repoPath: string): Promise<SymbolInfo[]> {
     }
 
     try {
-      const fileSymbols = indexFile(relPath, content);
+      const fileSymbols = await indexFile(relPath, content);
       allSymbols.push(...fileSymbols);
     } catch (err) {
       console.warn(`[ast-indexer] Failed to index: ${relPath}`, err);
